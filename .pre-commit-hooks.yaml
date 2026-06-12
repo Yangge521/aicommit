@@ -1,0 +1,30 @@
+# Pre-commit hook integration for aicommit
+# Add this to your .pre-commit-config.yaml:
+#
+# repos:
+#   - repo: https://github.com/Ghy/aicommit
+#     rev: v1.2.0
+#     hooks:
+#       - id: aicommit
+#
+# Or use local:
+#   - repo: local
+#     hooks:
+#       - id: aicommit
+#         name: AI Commit Message
+#         entry: aicommit
+#         args: ["--hook"]
+#         language: python
+#         stages: [prepare-commit-msg]
+#         always_run: true
+#         verbose: true
+
+- id: aicommit
+  name: AI Commit Message Generator
+  description: Automatically generate commit messages using AI
+  entry: aicommit --hook
+  language: python
+  stages: [prepare-commit-msg]
+  always_run: true
+  verbose: true
+  minimum_pre_commit_version: 3.0.0

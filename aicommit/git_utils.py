@@ -1,6 +1,8 @@
 """Git operations for aicommit."""
 
+import platform
 import subprocess
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -19,9 +21,10 @@ def run_git(args: list[str], cwd: Optional[Path] = None) -> str:
             text=True,
             cwd=cwd,
             encoding="utf-8",
+            creationflags=0x08000000 if platform.system() == "Windows" else 0,
         )
         if result.returncode != 0:
-            raise GitError(result.stderr.strip())
+            raise GitError(result.stderr.strip() or result.stdout.strip())
         return result.stdout.strip()
     except FileNotFoundError:
         raise GitError("Git is not installed or not in PATH")
@@ -36,20 +39,62 @@ def is_git_repo(path: Optional[Path] = None) -> bool:
         return False
 
 
-def get_staged_diff(max_lines: int = 200) -> str:
-    """Get the git diff of staged changes, truncated."""
-    try:
-        # Get diffstat first for summary
-        stat = run_git(["diff", "--cached", "--stat"])
-        # Get actual diff
-        diff = run_git(["diff", "--cached", "--unified=3"])
-    except GitError:
-        raise GitError("No staged changes found. Use `git add` first.")
+_NOISE_PATTERNS = [
+    ".lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "poetry.lock", "Gemfile.lock", "Cargo.lock", "composer.lock",
+    ".min.js", ".min.css", ".map", ".pyc", ".pyo",
+    ".sum", "go.sum", ".mod",
+    "dist/", "build/", ".next/", "node_modules/",
+    ".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff",
+    ".generated.", "autogen", ".pb.go", ".pb.cc",
+]
+
+
+def is_noise_file(filepath: str) -> bool:
+    """Check if a file is likely noise (lockfiles, generated, binaries)."""
+    lower = filepath.lower()
+    for pat in _NOISE_PATTERNS:
+        if pat in lower:
+            return True
+    return False
+
+
+def get_staged_diff(max_lines: int = 200, skip_noise: bool = True) -> str:
+    """Get the git diff of staged changes, with smart filtering and truncation.
+
+    Args:
+        max_lines: Maximum lines of diff to return (truncates smartly)
+        skip_noise: If True, skip lockfiles, generated files, etc.
+    """
+    all_files = get_staged_files()
+
+    if skip_noise:
+        meaningful = [f for f in all_files if not is_noise_file(f)]
+    else:
+        meaningful = list(all_files)
+
+    if not meaningful:
+        # All files are noise — fall back to all files
+        meaningful = list(all_files)
+
+    # Get diff stat for meaningful files only
+    stat = run_git(["diff", "--cached", "--stat", "--"] + meaningful)
+
+    # Get actual diff
+    diff = run_git(["diff", "--cached", "--unified=3", "--"] + meaningful)
+
+    # Check diff size and warn if very large
+    total_lines = diff.count("\n")
+    if total_lines > 500:
+        # For very large diffs, only keep the stat + first 200 lines of diff
+        # to give AI enough context without overwhelming
+        diff = "\n".join(diff.split("\n")[:200])
+        diff += f"\n\n... ({total_lines - 200} more diff lines truncated for brevity)"
 
     # Build full diff with stat header
     full_diff = stat + "\n\n" + diff
 
-    # Truncate if too long
+    # Final truncation safety net
     lines = full_diff.split("\n")
     if len(lines) > max_lines:
         full_diff = "\n".join(lines[:max_lines])
@@ -97,10 +142,35 @@ def get_repo_name() -> str:
 def has_staged_changes() -> bool:
     """Check if there are staged changes."""
     try:
-        run_git(["diff", "--cached", "--quiet"])
-        return False  # Exit 0 means no changes
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            capture_output=True,
+            creationflags=0x08000000 if platform.system() == "Windows" else 0,
+        )
+        return result.returncode != 0
+    except FileNotFoundError:
+        raise GitError("Git is not installed or not in PATH")
+
+
+def get_last_commit_diff(max_lines: int = 200) -> str:
+    """Get the diff of the most recent commit (for --last mode)."""
+    try:
+        stat = run_git(["show", "--stat", "HEAD"])
+        diff = run_git(["show", "--unified=3", "HEAD"])
     except GitError:
-        return True  # Exit 1 means there are changes
+        raise GitError("No previous commit found. This is the initial commit.")
+
+    full_diff = stat + "\n\n" + diff
+    lines = full_diff.split("\n")
+    if len(lines) > max_lines:
+        full_diff = "\n".join(lines[:max_lines])
+        full_diff += f"\n\n... (truncated, {len(lines) - max_lines} more lines)"
+    return full_diff
+
+
+def get_last_commit_message() -> str:
+    """Get the most recent commit message."""
+    return run_git(["log", "-1", "--format=%B"])
 
 
 def detect_scope(files: list[str]) -> Optional[str]:
@@ -113,12 +183,15 @@ def detect_scope(files: list[str]) -> Optional[str]:
     if not files:
         return None
 
-    # Extract top-level or common directory patterns
+    # Filter noise files for scope detection
+    meaningful = [f for f in files if not is_noise_file(f)]
+    if not meaningful:
+        meaningful = files
+
     dirs = []
-    for f in files:
+    for f in meaningful:
         parts = Path(f).parts
         if len(parts) >= 2:
-            # Skip common root dirs like src/, lib/, app/
             skip_dirs = {"src", "lib", "app", "packages", "internal", "pkg", "cmd"}
             for p in parts[:-1]:
                 if p.lower() not in skip_dirs and not p.startswith("."):
@@ -126,17 +199,19 @@ def detect_scope(files: list[str]) -> Optional[str]:
                     break
             else:
                 dirs.append(parts[0].lower())
+        else:
+            # Single file at root
+            stem = Path(f).stem.lower()
+            if stem not in ("readme", "license", "changelog"):
+                dirs.append(stem)
 
     if not dirs:
         return None
 
-    # Find most common directory
-    from collections import Counter
     counter = Counter(dirs)
     most_common = counter.most_common(1)[0]
 
-    # Only suggest scope if it appears in >50% of files (or at least 2 files)
-    if most_common[1] >= 2 or most_common[1] / len(files) > 0.5:
+    if most_common[1] >= 2 and most_common[1] / len(dirs) > 0.5:
         return most_common[0]
     return None
 
@@ -164,19 +239,12 @@ def detect_breaking_changes(diff: str) -> bool:
 def infer_type_from_branch(branch: str) -> Optional[str]:
     """Infer commit type from branch name convention.
 
-    feat/xxx → feat
-    fix/xxx → fix
-    chore/xxx → chore
-    docs/xxx → docs
-    refactor/xxx → refactor
+    feat/xxx → feat, fix/xxx → fix, chore/xxx → chore, etc.
     """
     branch_lower = branch.lower()
     type_prefixes = {
-        "feat/": "feat",
-        "feature/": "feat",
-        "fix/": "fix",
-        "bugfix/": "fix",
-        "hotfix/": "fix",
+        "feat/": "feat", "feature/": "feat",
+        "fix/": "fix", "bugfix/": "fix", "hotfix/": "fix",
         "chore/": "chore",
         "docs/": "docs",
         "refactor/": "refactor",
@@ -192,63 +260,105 @@ def infer_type_from_branch(branch: str) -> Optional[str]:
     return None
 
 
-def commit(message: str) -> bool:
+def commit(message: str, signoff: bool = False, no_verify: bool = False) -> bool:
     """Create a commit with the given message."""
     try:
-        run_git(["commit", "-m", message])
+        args = ["commit", "-m", message]
+        if signoff:
+            args.insert(1, "--signoff")
+        if no_verify:
+            args.insert(1, "--no-verify")
+        run_git(args)
         return True
     except GitError as e:
         raise GitError(f"Commit failed: {e}")
 
 
+def amend_commit(message: str, signoff: bool = False, no_verify: bool = False) -> bool:
+    """Amend the last commit with a new message."""
+    try:
+        args = ["commit", "--amend", "-m", message]
+        if signoff:
+            args.insert(1, "--signoff")
+        if no_verify:
+            args.insert(1, "--no-verify")
+        run_git(args)
+        return True
+    except GitError as e:
+        raise GitError(f"Amend failed: {e}")
+
+
 def install_hook() -> str:
-    """Install aicommit as a prepare-commit-msg hook."""
+    """Install aicommit as a prepare-commit-msg hook.
+    Creates a shell script on Unix, batch file on Windows.
+    """
     git_dir = run_git(["rev-parse", "--git-dir"])
     hook_path = Path(git_dir) / "hooks" / "prepare-commit-msg"
 
     if hook_path.exists():
-        # Check if it's already our hook
         content = hook_path.read_text(encoding="utf-8")
         if "aicommit" in content:
             raise GitError("aicommit hook is already installed.")
         raise GitError(
             f"A prepare-commit-msg hook already exists at {hook_path}.\n"
-            "Remove it first or manually add `aicommit --hook \"$1\"` to it."
+            f'Remove it first or manually add `aicommit --hook "%1"` to it.'
         )
 
-    hook_script = f'''#!/bin/sh
-# Generated by aicommit — AI-powered commit messages
-# This hook runs before the commit message editor opens.
-# It generates an AI suggestion in the commit message buffer.
-
-COMMIT_MSG_FILE="$1"
-COMMIT_SOURCE="$2"
-
-# Only run for new commits, not merges/amends/squashes
-case "$COMMIT_SOURCE" in
-    message|template|commit) ;;
-    merge|squash) exit 0 ;;
-    *) exit 0 ;;
-esac
-
-# Check if there are staged changes
-if ! git diff --cached --quiet 2>/dev/null; then
-    # Has staged changes — run aicommit
-    aicommit --hook "$COMMIT_MSG_FILE" 2>/dev/null
-fi
-
-exit 0
-'''
-
     hook_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if platform.system() == "Windows":
+        hook_script = _windows_hook_script()
+    else:
+        hook_script = _unix_hook_script()
+
     hook_path.write_text(hook_script, encoding="utf-8")
-    # Make executable on Unix
     try:
         hook_path.chmod(0o755)
     except Exception:
         pass
 
     return str(hook_path)
+
+
+def _unix_hook_script() -> str:
+    """Generate Unix shell hook script."""
+    return """#!/bin/sh
+# Generated by aicommit — AI-powered commit messages
+COMMIT_MSG_FILE="$1"
+COMMIT_SOURCE="$2"
+
+case "$COMMIT_SOURCE" in
+    message|template|commit) ;;
+    merge|squash) exit 0 ;;
+    *) exit 0 ;;
+esac
+
+if ! git diff --cached --quiet 2>/dev/null; then
+    aicommit --hook "$COMMIT_MSG_FILE" 2>/dev/null
+fi
+exit 0
+"""
+
+
+def _windows_hook_script() -> str:
+    """Generate Windows batch hook script."""
+    return """@echo off
+REM Generated by aicommit — AI-powered commit messages
+set COMMIT_MSG_FILE=%1
+set COMMIT_SOURCE=%2
+
+if "%COMMIT_SOURCE%"=="message" goto :run
+if "%COMMIT_SOURCE%"=="template" goto :run
+if "%COMMIT_SOURCE%"=="commit" goto :run
+exit /b 0
+
+:run
+git diff --cached --quiet 2>nul
+if errorlevel 1 (
+    aicommit --hook "%COMMIT_MSG_FILE%" 2>nul
+)
+exit /b 0
+"""
 
 
 def uninstall_hook() -> str:

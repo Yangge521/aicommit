@@ -30,43 +30,92 @@ DEFAULT_CONFIG = {
         "language": "auto",
         "max_diff_lines": 200,
         "auto_confirm": False,
+        "signoff": False,
+        "no_verify": False,
     },
 }
 
 
 def load_config() -> dict:
-    """Load config from file, creating default if missing."""
+    """Load config from file, overriding with environment variables.
+
+    Environment variables (highest priority):
+      AICOMMIT_API_KEY       → api.key
+      AICOMMIT_ENDPOINT      → api.endpoint
+      AICOMMIT_MODEL         → api.model
+      AICOMMIT_STYLE         → commit.style
+      AICOMMIT_LANGUAGE      → commit.language
+      AICOMMIT_MAX_DIFF_LINES → commit.max_diff_lines
+    """
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "rb") as f:
                 loaded = tomllib.load(f)
-            # Merge with defaults
             config = DEFAULT_CONFIG.copy()
             _deep_merge(config, loaded)
-            return config
         except Exception:
             console.print("[yellow]⚠ Config file corrupted, using defaults[/yellow]")
-            return DEFAULT_CONFIG.copy()
-    return DEFAULT_CONFIG.copy()
+            config = DEFAULT_CONFIG.copy()
+    else:
+        config = DEFAULT_CONFIG.copy()
+
+    # Override with environment variables
+    env_map = {
+        "api": {
+            "AICOMMIT_API_KEY": ("key", str),
+            "AICOMMIT_ENDPOINT": ("endpoint", str),
+            "AICOMMIT_MODEL": ("model", str),
+        },
+        "commit": {
+            "AICOMMIT_STYLE": ("style", str),
+            "AICOMMIT_LANGUAGE": ("language", str),
+            "AICOMMIT_MAX_DIFF_LINES": ("max_diff_lines", int),
+        },
+    }
+    for section, vars in env_map.items():
+        for env_key, (config_key, cast) in vars.items():
+            val = os.environ.get(env_key)
+            if val is not None:
+                config[section][config_key] = cast(val)
+
+    return config
 
 
 def save_config(config: dict) -> None:
-    """Save config to file."""
+    """Save config to file using proper TOML format."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    lines = []
-    lines.append("# aicommit configuration")
-    lines.append("# API settings")
-    lines.append(f'endpoint = "{config["api"]["endpoint"]}"')
-    lines.append(f'key = "{config["api"]["key"]}"')
-    lines.append(f'model = "{config["api"]["model"]}"')
-    lines.append("")
-    lines.append("# Commit preferences")
-    lines.append(f'style = "{config["commit"]["style"]}"')
-    lines.append(f'language = "{config["commit"]["language"]}"')
-    lines.append(f"max_diff_lines = {config['commit']['max_diff_lines']}")
-    lines.append(f"auto_confirm = {str(config['commit']['auto_confirm']).lower()}")
+
+    lines = [
+        "# aicommit configuration",
+        "# Run `aicommit --config` to reconfigure interactively.",
+        "",
+        "[api]",
+        f'endpoint = "{_escape_toml_str(config["api"]["endpoint"])}"',
+        f'key = "{_escape_toml_str(config["api"]["key"])}"',
+        f'model = "{_escape_toml_str(config["api"]["model"])}"',
+        "",
+        "[commit]",
+        f'style = "{_escape_toml_str(config["commit"]["style"])}"',
+        f'language = "{_escape_toml_str(config["commit"]["language"])}"',
+        f"max_diff_lines = {config['commit']['max_diff_lines']}",
+        f"auto_confirm = {str(config['commit']['auto_confirm']).lower()}",
+        f"signoff = {str(config['commit'].get('signoff', False)).lower()}",
+        f"no_verify = {str(config['commit'].get('no_verify', False)).lower()}",
+        "",
+    ]
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+
+
+def _escape_toml_str(s: str) -> str:
+    """Escape a string for safe TOML embedding."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def reset_config() -> None:
+    """Reset configuration to defaults."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    save_config(DEFAULT_CONFIG.copy())
 
 
 def setup_wizard() -> dict:

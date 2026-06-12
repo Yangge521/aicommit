@@ -19,6 +19,8 @@ def show_config_status(config: dict):
     style = config["commit"]["style"]
     language = config["commit"]["language"]
     auto = "[green]yes[/green]" if config["commit"]["auto_confirm"] else "[dim]no[/dim]"
+    signoff = "[green]yes[/green]" if config["commit"].get("signoff") else "[dim]no[/dim]"
+    no_verify = "[green]yes[/green]" if config["commit"].get("no_verify") else "[dim]no[/dim]"
 
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column(style="dim")
@@ -29,6 +31,8 @@ def show_config_status(config: dict):
     table.add_row("Style:", f"[bold]{style}[/bold]")
     table.add_row("Language:", f"[bold]{language}[/bold]")
     table.add_row("Auto-confirm:", auto)
+    table.add_row("Signoff:", signoff)
+    table.add_row("No-verify:", no_verify)
 
     console.print(
         Panel(table, title="[bold]Configuration[/bold]", border_style="blue")
@@ -94,27 +98,30 @@ def show_dry_run(message: str):
 def show_diff_summary(files: list[str], stats: str, scope: str = "",
                       branch_type: str = "", breaking: bool = False):
     """Show summary of staged changes."""
-    # Files count
-    console.print(f"[dim]Staged: {len(files)} file(s)[/dim]", end="")
+    if files:
+        console.print(f"[dim]Staged: {len(files)} file(s)[/dim]", end="")
+    else:
+        console.print(f"[dim]Analyzing last commit[/dim]", end="")
 
-    # Scope
     if scope:
         console.print(f" [cyan]→ scope: {scope}[/cyan]", end="")
 
-    # Branch type hint
     if branch_type:
         console.print(f" [yellow]→ branch suggests: {branch_type}[/yellow]", end="")
 
-    # Breaking change warning
     if breaking:
         console.print(f" [red bold]⚠ BREAKING CHANGE DETECTED[/red bold]", end="")
 
     console.print()
 
-    # Show abbreviated stat
     if stats:
         for line in stats.strip().split("\n")[:5]:
             console.print(f"  [dim]{line}[/dim]")
+
+
+def show_warning(msg: str):
+    """Show a warning message."""
+    console.print(f"[yellow]⚠ {msg}[/yellow]")
 
 
 def confirm_commit(message: str) -> bool:
@@ -143,3 +150,8 @@ def show_hook_installed(path: str):
 def show_hook_uninstalled(path: str):
     """Show hook removal success."""
     console.print(f"\n[green]✓ Hook removed from {path}[/green]\n")
+
+
+def show_reset_done():
+    """Show config reset confirmation."""
+    console.print("[green]✓ Configuration reset to defaults.[/green]")

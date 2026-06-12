@@ -34,10 +34,23 @@ def generate_commit_message(
     branch_hint: str = "",
     breaking_hint: str = "",
     file_list: str = "",
+    template: Optional[str] = None,
 ) -> AIResult:
     """Generate a commit message using the configured AI provider.
 
-    Returns AIResult with the message and metadata.
+    Args:
+        diff: Git diff content
+        style: Commit style (conventional, emoji, simple, detailed)
+        language: Output language hint
+        recent_commits: Recent commit messages for style matching
+        hint: User-provided additional context
+        branch_hint: Auto-detected branch type hint
+        breaking_hint: Breaking change warning
+        file_list: List of changed files
+        template: Custom prompt template (overrides style prompts)
+
+    Returns:
+        AIResult with generated message and metadata.
     """
     config = load_config()
 
@@ -50,33 +63,44 @@ def generate_commit_message(
             "No API key configured. Run `aicommit --config` to set up."
         )
 
-    # Build recent commits context
-    recent_text = ""
-    if recent_commits:
-        recent_text = "Recent commits (match this style):\n"
-        for c in recent_commits:
-            recent_text += f"  - {c}\n"
-
-    # Get style prompt
-    prompt_template = STYLE_PROMPTS.get(style, STYLE_PROMPTS["conventional"])
-    user_prompt = prompt_template.format(
-        diff=diff,
-        recent_commits=recent_text,
-        branch_hint=branch_hint,
-        breaking_hint=breaking_hint,
-        file_list=file_list,
-    )
-
-    if hint:
-        user_prompt += f"\n\nAdditional context from user: \"{hint}\""
-
+    # Build system prompt
     system = SYSTEM_PROMPT.format(language=language)
 
-    # Make API call
+    # Build user prompt
+    if template:
+        # Use custom template
+        user_prompt = template.format(
+            diff=diff,
+            style=style,
+            branch_hint=branch_hint,
+            breaking_hint=breaking_hint,
+            file_list=file_list,
+        )
+    else:
+        recent_text = ""
+        if recent_commits:
+            recent_text = "Recent commits (match this style):\n"
+            for c in recent_commits:
+                recent_text += f"  - {c}\n"
+
+        prompt_template = STYLE_PROMPTS.get(style, STYLE_PROMPTS["conventional"])
+        user_prompt = prompt_template.format(
+            diff=diff,
+            recent_commits=recent_text,
+            branch_hint=branch_hint,
+            breaking_hint=breaking_hint,
+            file_list=file_list,
+        )
+
+    if hint:
+        user_prompt += f'\n\nAdditional context from user: "{hint}"'
+
+    # Make API call with proper timeout
     start_time = time.time()
+    timeout = httpx.Timeout(60.0, connect=15.0)
 
     try:
-        with httpx.Client(timeout=60.0) as client:
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(
                 f"{endpoint}/chat/completions",
                 headers={
@@ -103,7 +127,7 @@ def generate_commit_message(
 
             message = data["choices"][0]["message"]["content"].strip()
 
-            # Remove markdown code block wrapping
+            # Clean up markdown code block wrapping
             if message.startswith("```"):
                 lines = message.split("\n")
                 if lines[-1].strip() == "```":
@@ -126,15 +150,25 @@ def generate_commit_message(
             )
 
     except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
+        status = e.response.status_code
+        if status == 401:
             raise AIError("Invalid API key. Run `aicommit --config` to update.")
-        elif e.response.status_code == 429:
+        elif status == 429:
             raise AIError("API rate limit exceeded. Please try again later.")
-        elif e.response.status_code == 404:
+        elif status == 404:
             raise AIError(
                 f"Model '{model}' not found at {endpoint}. Check your configuration."
             )
+        elif status >= 500:
+            raise AIError(f"API server error ({status}). The provider may be down.")
         else:
-            raise AIError(f"API error ({e.response.status_code}): {e.response.text[:200]}")
+            body = e.response.text[:300]
+            raise AIError(f"API error ({status}): {body}")
+    except httpx.ConnectError:
+        raise AIError(
+            f"Could not connect to {endpoint}. Check your network and endpoint URL."
+        )
+    except httpx.TimeoutException:
+        raise AIError("Request timed out. The AI provider may be slow or unreachable.")
     except httpx.RequestError as e:
         raise AIError(f"Connection failed: {e}")
