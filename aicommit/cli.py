@@ -9,10 +9,11 @@ from pathlib import Path
 
 import click
 from rich.panel import Panel
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
 
 from .__init__ import __version__
-from .ai import AIError as AIErr, generate_commit_message
+from .ai import AIError as AIErr, AIResult, generate_commit_message
 from .config import (
     CONFIG_FILE,
     load_config,
@@ -61,6 +62,10 @@ from .render import console, show_diff_summary, show_generating, show_status
 @click.option("--amend", is_flag=True, help="Amend the last commit with generated message")
 @click.option("--template", "-t", "template_file", default=None, help="Custom prompt template file")
 @click.option("--stage", "-a", "auto_stage", is_flag=True, help="Auto-stage all modified files before commit")
+@click.option("--co-author", "co_author", multiple=True, default=None, help="Add Co-authored-by trailer (repeatable)")
+@click.option("--choose", "-c", "choose_mode", is_flag=True, help="Generate 3 options and pick one interactively")
+@click.option("--init", "init_mode", is_flag=True, help="One-command setup: configure git + AI provider")
+@click.option("--stats", "show_stats", is_flag=True, help="Show usage statistics dashboard")
 @click.option("--temperature", type=float, default=None, help="Override AI temperature (0.0-1.0)")
 @click.option("--max-tokens", type=int, default=None, help="Max tokens for AI response")
 @click.option("--config", "run_config", is_flag=True, help="Run interactive configuration wizard")
@@ -88,7 +93,8 @@ from .render import console, show_diff_summary, show_generating, show_status
 @click.option("--hook", "hook_file", default=None, help=HIDDEN, hidden=True)
 def main(
     style, hint, dry_run, auto_yes, edit, scope, signoff, no_verify,
-    last, amend, template_file, auto_stage, temperature, max_tokens,
+    last, amend, template_file, auto_stage, co_author, choose_mode, init_mode, show_stats,
+    temperature, max_tokens,
     run_config, reset_config_flag, show_status,
     install_hook_flag, uninstall_hook_flag,
     review, severity, generate_pr, pr_base,
@@ -118,6 +124,12 @@ def main(
         return
     if show_log:
         _run_log()
+        return
+    if init_mode:
+        _run_init()
+        return
+    if show_stats:
+        _run_stats()
         return
     if hook_file:
         _run_hook_mode(hook_file)
@@ -214,26 +226,35 @@ def main(
 
         temp_override = temperature if temperature is not None else config["api"].get("temperature", 0.3)
 
-        with show_generating() as progress:
-            task = progress.add_task("", total=None)
-            try:
-                result = generate_commit_message(
-                    diff=diff,
-                    style=commit_style,
-                    language=language,
-                    hint=hint,
-                    branch_hint=f"Branch: {branch}, type: {branch_type}" if branch_type else "",
-                    breaking_hint="BREAKING CHANGE DETECTED" if breaking else "",
-                    file_list=files,
-                    template=custom_template,
-                    max_tokens_override=max_tokens,
-                    temperature_override=temp_override,
-                )
-            except (GitErr, AIErr) as e:
+        # Choose mode: generate 3 options for user to pick
+        if choose_mode:
+            result = _choose_commit_message(
+                diff=diff, style=commit_style, language=language,
+                hint=hint, branch_type=branch_type, branch=branch,
+                breaking=breaking, files=files, custom_template=custom_template,
+                max_tokens_override=max_tokens, temperature_override=temp_override,
+            )
+        else:
+            with show_generating() as progress:
+                task = progress.add_task("", total=None)
+                try:
+                    result = generate_commit_message(
+                        diff=diff,
+                        style=commit_style,
+                        language=language,
+                        hint=hint,
+                        branch_hint=f"Branch: {branch}, type: {branch_type}" if branch_type else "",
+                        breaking_hint="BREAKING CHANGE DETECTED" if breaking else "",
+                        file_list=files,
+                        template=custom_template,
+                        max_tokens_override=max_tokens,
+                        temperature_override=temp_override,
+                    )
+                except (GitErr, AIErr) as e:
+                    progress.remove_task(task)
+                    console.print(f"[red]✗ {e}[/red]")
+                    sys.exit(1)
                 progress.remove_task(task)
-                console.print(f"[red]✗ {e}[/red]")
-                sys.exit(1)
-            progress.remove_task(task)
 
         console.print()
         console.print(
@@ -272,6 +293,10 @@ def main(
         final_msg = result.message
         if edit:
             final_msg = _edit_message(final_msg)
+
+        # Add co-author trailers
+        for author in co_author:
+            final_msg += f"\nCo-authored-by: {author}"
 
         # Commit
         commit_args = ["commit", "-m", final_msg]
@@ -357,9 +382,9 @@ def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: b
             try:
                 result = generate_commit_message(
                     diff=diff_text, style=style, language=language,
-                    hint=hint or f"Rewrite commit message for these changes",
+                    hint=hint or "Rewrite commit message for these changes",
                     branch_hint=f"Branch: {branch}, type: {branch_type}" if branch_type else "",
-                    max_tokens_override=getattr(hint, '__len__', lambda:0)() or 500,
+                    max_tokens_override=500,
                 )
             except (GitErr, AIErr) as e:
                 progress.remove_task(task)
@@ -732,6 +757,115 @@ def _run_hook_mode(commit_msg_file: str):
         })
     except Exception:
         pass  # Hook should never block the commit
+
+
+def _choose_commit_message(**kwargs) -> AIResult:
+    """Generate 3 commit message candidates and let user pick one."""
+    from rich.prompt import Prompt
+
+    options: list[AIResult] = []
+    for i in range(3):
+        with show_generating() as progress:
+            task = progress.add_task(f"Option {i+1}/3", total=None)
+            try:
+                r = generate_commit_message(
+                    diff=kwargs["diff"],
+                    style=kwargs["style"],
+                    language=kwargs["language"],
+                    hint=kwargs.get("hint"),
+                    branch_hint=kwargs.get("branch_hint") or "",
+                    breaking_hint=kwargs.get("breaking_hint") or "",
+                    file_list=kwargs.get("files"),
+                    template=kwargs.get("custom_template"),
+                    max_tokens_override=kwargs.get("max_tokens_override"),
+                    temperature_override=kwargs.get("temperature_override", 0.3) + i * 0.15,
+                )
+                options.append(r)
+            except (GitErr, AIErr) as e:
+                progress.remove_task(task)
+                if i == 0:
+                    console.print(f"[red]✗ {e}[/red]")
+                    sys.exit(1)
+            progress.remove_task(task)
+
+    console.print()
+    for i, opt in enumerate(options, 1):
+        letter = ["a", "b", "c"][i - 1]
+        console.print(f"  [bold cyan]{letter})[/bold cyan] {opt.message}")
+
+    console.print()
+    choice = Prompt.ask("[bold]Pick one[/bold]", choices=["a", "b", "c"], default="a")
+    idx = {"a": 0, "b": 1, "c": 2}[choice]
+    return options[idx]
+
+
+def _run_init():
+    """One-command setup: configure git + AI provider."""
+    console.print(Panel(
+        "[bold]🚀 aicommit — First-Time Setup[/bold]\n\n"
+        "This will configure git and your AI provider.",
+        border_style="cyan",
+    ))
+
+    # Git config
+    try:
+        name = sp.run(["git", "config", "user.name"], capture_output=True, text=True).stdout.strip()
+        email = sp.run(["git", "config", "user.email"], capture_output=True, text=True).stdout.strip()
+        if not name or not email:
+            console.print("[yellow]⚠ Git user not fully configured.[/yellow]")
+            if not name:
+                n = Prompt.ask("  Git user.name")
+                sp.run(["git", "config", "--global", "user.name", n])
+            if not email:
+                e = Prompt.ask("  Git user.email")
+                sp.run(["git", "config", "--global", "user.email", e])
+            console.print("[green]✓ Git user configured[/green]")
+        else:
+            console.print(f"[dim]Git user: {name} <{email}>[/dim]")
+    except Exception:
+        pass
+
+    # AI provider setup
+    config = setup_wizard()
+    if config["api"]["key"]:
+        console.print("[green]✓ AI provider configured[/green]")
+        console.print("\n[bold]All set! Try:[/bold] [cyan]aicommit[/cyan]")
+    else:
+        console.print("[red]✗ Setup incomplete — API key required.[/red]")
+
+
+def _run_stats():
+    """Show usage statistics dashboard."""
+    entries = load_history(limit=500)
+    if not entries:
+        console.print("[dim]No history yet. Run aicommit to generate your first commit message.[/dim]")
+        return
+
+    from collections import Counter
+    styles = Counter(e.get("style", "?") for e in entries)
+    repos = Counter(e.get("repo", "?") for e in entries)
+    total_tokens_in = sum(e.get("tokens_in", 0) for e in entries)
+    total_tokens_out = sum(e.get("tokens_out", 0) for e in entries)
+    total_time_ms = sum(e.get("time_ms", 0) for e in entries)
+    models = Counter(e.get("model", "?") for e in entries)
+
+    table = Table(title="📊 aicommit Usage Stats", border_style="cyan")
+    table.add_column("Metric", style="bold")
+    table.add_column("Value")
+
+    table.add_row("Total commits", str(len(entries)))
+    table.add_row("Total tokens (in/out)", f"{total_tokens_in:,} / {total_tokens_out:,}")
+    table.add_row("Total AI time", f"{total_time_ms/1000:.1f}s")
+    table.add_row("Avg tokens/commit", f"{(total_tokens_in + total_tokens_out) // max(len(entries), 1):,}")
+    table.add_row("Avg time/commit", f"{total_time_ms / max(len(entries), 1):.0f}ms")
+    table.add_row("Top style", styles.most_common(1)[0][0] if styles else "N/A")
+    table.add_row("Top model", models.most_common(1)[0][0] if models else "N/A")
+    table.add_row("Repos", ", ".join(f"{r}({c})" for r, c in repos.most_common(5)))
+
+    console.print()
+    console.print(table)
+    console.print()
+    console.print("[dim]Use `aicommit log` to see recent messages.[/dim]")
 
 
 if __name__ == "__main__":

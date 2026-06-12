@@ -272,3 +272,16 @@ class TestClipboard:
     def test_clipboard_import(self):
         import platform
         assert platform.system()  # Just verify platform is available
+
+
+class TestAIStats:
+    def test_history_load_empty(self):
+        from aicommit.config import load_history
+        entries = load_history(limit=5)
+        assert isinstance(entries, list)
+
+    def test_history_dedup(self):
+        from aicommit.config import save_history, load_history, reset_config
+        save_history({"repo": "test", "branch": "main", "style": "feat", "message": "test"})
+        entries = load_history(limit=50)
+        assert any(e["message"] == "test" for e in entries)
