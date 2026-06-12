@@ -26,6 +26,10 @@ Types:
 - test: adding or correcting tests
 - chore: build process, tooling, dependencies
 - ci: CI/CD changes
+- revert: reverts a previous commit
+
+{branch_hint}
+{breaking_hint}
 
 The description should:
 - Use imperative mood ("add" not "added" or "adds")
@@ -35,6 +39,9 @@ The description should:
 
 If changes span multiple concerns, use the most impactful type.
 {recent_commits}
+
+File paths changed:
+{file_list}
 
 Staged changes:
 {diff}
@@ -60,9 +67,14 @@ Common emojis:
 - 🗑️ remove: deleting code/files
 - 🚚 move: moving/renaming files
 - 🏗️ build: build system changes
+- 💥 breaking: breaking changes
+- ⏪ revert: reverting changes
 
 Pick the most appropriate emoji. Description should be short and clear.
-{recent_commits}
+{branch_hint}
+
+File paths changed:
+{file_list}
 
 Staged changes:
 {diff}
@@ -73,6 +85,10 @@ SIMPLE_PROMPT = """Generate a short, clear commit message for these staged chang
 
 Keep it under 72 characters. Use imperative mood. One line only.
 {recent_commits}
+{branch_hint}
+
+File paths changed:
+{file_list}
 
 Staged changes:
 {diff}
@@ -92,6 +108,10 @@ Guidelines:
 - Mention affected files/modules if relevant
 - Highlight any breaking changes or important notes
 {recent_commits}
+{branch_hint}
+
+File paths changed:
+{file_list}
 
 Staged changes:
 {diff}

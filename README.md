@@ -2,24 +2,25 @@
 
 > 🚀 **AI writes your git commit messages. You ship code.**
 
-[![PyPI](https://img.shields.io/badge/pypi-v1.0.0-blue)](https://pypi.org/project/aicommit/)
+[![PyPI](https://img.shields.io/badge/pypi-v1.1.0-blue)](https://pypi.org/project/aicommit/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-14%20passed-brightgreen)](.)
 
 Stop staring at your terminal wondering what commit message to write. **aicommit** reads your staged changes, understands your code, and generates the perfect commit message — in any style you want.
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Ghy/aicommit/main/demo.svg" width="700" alt="aicommit demo">
-</p>
-
 ## ✨ Features
 
-- 🧠 **AI-Powered** — Uses DeepSeek (free), OpenAI, or any OpenAI-compatible API
+- 🧠 **AI-Powered** — Uses DeepSeek (free tier), OpenAI, or any OpenAI-compatible API
 - 🎨 **4 Commit Styles** — Conventional Commits, Gitmoji, Simple, Detailed
+- 🎯 **Smart Context** — Auto-detects scope from file paths, branch type, breaking changes
+- 🔍 **Branch-Aware** — Infers commit type from branch name (feat/xxx, fix/xxx, etc.)
+- 💥 **Breaking Change Detection** — Automatically flags breaking changes with `!`
+- 🪝 **Git Hook** — Install as prepare-commit-msg hook for automatic suggestions
+- ✏️ **Edit Mode** — Open generated message in $EDITOR before committing
 - ⚡ **Zero Config** — Works out of the box with DeepSeek's free tier
-- 🎯 **Context-Aware** — Analyzes your recent commits, branch name, and diff
 - 💬 **Interactive** — Preview before committing, or auto-confirm with `-y`
-- 🖥️ **Beautiful CLI** — Rich terminal output with progress animations
+- 🖥️ **Beautiful CLI** — Rich terminal output with progress animations and token stats
 - 🔌 **Any LLM** — Works with OpenAI, DeepSeek, Ollama, Groq, and more
 
 ## 📦 Installation
@@ -37,7 +38,7 @@ pipx install aicommit
 ## 🚀 Quick Start
 
 ```bash
-# 1. Setup (one-time)
+# 1. Setup (one-time, 3 steps)
 aicommit --config
 
 # 2. Stage your changes
@@ -64,11 +65,37 @@ aicommit -s detailed   # Detailed with bullet points
 aicommit -s simple     # Short and sweet
 ```
 
+## 🧠 Smart Context Analysis
+
+aicommit doesn't just read your diff — it understands the context:
+
+- **Scope Detection**: `src/auth/login.ts` + `src/auth/logout.ts` → scope: `auth`
+- **Branch Inference**: Branch `feat/oauth-login` → type: `feat`
+- **Breaking Changes**: Detects deprecated APIs, signature changes → adds `!` flag
+- **Style Matching**: Learns from your last 5 commit messages
+- **File Context**: Understands which files changed and why it matters
+
+```bash
+$ aicommit
+Staged: 3 file(s) → scope: auth → branch suggests: feat ⚠ BREAKING CHANGE DETECTED
+Repo: aicommit | Branch: feat/oauth-login
+
+┌─ Generated Message (📐 Conventional) ──┐
+│ feat(auth)!: add OAuth2 login flow     │
+│                                        │
+│ BREAKING CHANGE: removed legacy token  │
+│ endpoint in favor of OAuth2            │
+└────────────────────────────────────────┘
+Model: deepseek-chat | Tokens: 420→68 | Time: 820ms
+
+Commit with this message? [y/N]:
+```
+
 ## 📖 Usage
 
 ```bash
 # Basic usage
-aicommit                # Generate and confirm
+aicommit                    # Generate and confirm
 
 # Skip confirmation
 aicommit -y
@@ -82,11 +109,42 @@ aicommit -m "fixing race condition in websocket handler"
 # Use a specific style
 aicommit -s conventional
 
+# Edit generated message before committing
+aicommit -e
+
+# Install as git hook (auto-suggests on every commit)
+aicommit --install-hook
+
+# Remove the git hook
+aicommit --uninstall-hook
+
 # Reconfigure
 aicommit --config
 
 # Show current config
 aicommit --status
+```
+
+## 🪝 Git Hook Integration
+
+Install aicommit as a `prepare-commit-msg` hook and get AI suggestions automatically on every `git commit`:
+
+```bash
+aicommit --install-hook
+```
+
+Now when you run `git commit`, the editor will be pre-filled with an AI-generated message. You can edit it or accept it as-is.
+
+```bash
+git add .
+git commit
+# → Editor opens with AI suggestion pre-filled!
+```
+
+Remove anytime:
+
+```bash
+aicommit --uninstall-hook
 ```
 
 ## 🔧 Configuration
@@ -134,10 +192,11 @@ aicommit --config
 **The Problem:** Writing good commit messages is tedious. Most developers either write vague messages ("update", "fix") or spend too long crafting the perfect one.
 
 **The Solution:** Let AI do it. aicommit understands your code changes and generates messages that are:
-- **Accurate** — Based on actual diff analysis
-- **Consistent** — Follows your team's conventions
-- **Fast** — Generated in seconds
-- **Customizable** — Your style, your rules
+- **Accurate** — Based on actual diff analysis, not guessing
+- **Consistent** — Follows your team's conventions automatically
+- **Context-Aware** — Scope detection, branch inference, breaking change awareness
+- **Fast** — Generated in under a second
+- **Customizable** — Your style, your rules, your model
 
 ## 🧪 Development
 
@@ -145,6 +204,7 @@ aicommit --config
 git clone https://github.com/Ghy/aicommit.git
 cd aicommit
 pip install -e ".[dev]"
+pytest
 ```
 
 ## 📝 License
