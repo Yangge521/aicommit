@@ -2,10 +2,10 @@
 
 > 🚀 **AI writes your git commit messages. You ship code.**
 
-[![PyPI](https://img.shields.io/badge/pypi-v1.1.0-blue)](https://pypi.org/project/aicommit/)
+[![PyPI](https://img.shields.io/badge/pypi-v1.3.0-blue)](https://pypi.org/project/aicommit/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-14%20passed-brightgreen)](.)
+[![Tests](https://img.shields.io/badge/tests-35%20passed-brightgreen)](.)
 
 Stop staring at your terminal wondering what commit message to write. **aicommit** reads your staged changes, understands your code, and generates the perfect commit message — in any style you want.
 
@@ -16,7 +16,15 @@ Stop staring at your terminal wondering what commit message to write. **aicommit
 - 🎯 **Smart Context** — Auto-detects scope from file paths, branch type, breaking changes
 - 🔍 **Branch-Aware** — Infers commit type from branch name (feat/xxx, fix/xxx, etc.)
 - 💥 **Breaking Change Detection** — Automatically flags breaking changes with `!`
-- 🪝 **Git Hook** — Install as prepare-commit-msg hook for automatic suggestions
+- 🔎 **Code Review** — AI-powered code review to catch bugs and issues before commit
+- 📋 **PR Description** — Generate pull request descriptions from branch diffs
+- 📦 **Squash Messages** — Generate consolidated messages from multiple commits
+- 📝 **Changelog Generation** — Auto-generate changelog entries from commit history
+- ✅ **Conventional Validation** — Validate and auto-fix conventional commit format
+- 🔤 **Shell Completions** — Built-in completions for bash, zsh, fish, PowerShell
+- 🪝 **Git Hook & Pre-commit** — Install as prepare-commit-msg hook or pre-commit framework
+- 📋 **Clipboard Support** — Auto-copy generated messages with `--copy`
+- 🌍 **CI/CD Ready** — All config overridable via `AICOMMIT_*` environment variables
 - ✏️ **Edit Mode** — Open generated message in $EDITOR before committing
 - ⚡ **Zero Config** — Works out of the box with DeepSeek's free tier
 - 💬 **Interactive** — Preview before committing, or auto-confirm with `-y`
@@ -112,6 +120,12 @@ aicommit -s conventional
 # Edit generated message before committing
 aicommit -e
 
+# Copy generated message to clipboard
+aicommit --copy
+
+# Override token limit
+aicommit --max-tokens 1000
+
 # Install as git hook (auto-suggests on every commit)
 aicommit --install-hook
 
@@ -123,6 +137,76 @@ aicommit --config
 
 # Show current config
 aicommit --status
+```
+
+### 🔎 Code Review
+
+```bash
+# Review staged changes before committing
+aicommit --review
+
+# Review with severity filter
+aicommit --review --severity high
+
+# Focus on specific area
+aicommit --review -m "SQL injection risks"
+```
+
+### 📋 PR Description
+
+```bash
+# Generate PR description from branch diff
+aicommit --pr
+
+# Specify base branch
+aicommit --pr --pr-base develop
+
+# Add context
+aicommit --pr -m "async refactor, focus on error handling"
+```
+
+### 📦 Squash & Changelog
+
+```bash
+# Generate squash message from last 5 commits
+aicommit --squash 5
+
+# Generate changelog entry
+aicommit --changelog
+
+# With version tag
+aicommit --changelog --version-tag v1.3.0
+```
+
+### ✅ Conventional Validation
+
+```bash
+# Validate conventional format
+aicommit --validate
+
+# Auto-fix format if needed
+aicommit --auto-fix
+```
+
+### 🔤 Shell Completions
+
+```bash
+# Generate for your shell
+aicommit --completion bash > ~/.aicommit-completion.bash
+aicommit --completion zsh > ~/.aicommit-completion.zsh
+aicommit --completion fish > ~/.config/fish/completions/aicommit.fish
+aicommit --completion powershell
+```
+
+### 🌍 CI/CD Environment Variables
+
+All config can be overridden via environment variables:
+
+```bash
+export AICOMMIT_API_KEY="sk-xxx"
+export AICOMMIT_MODEL="gpt-4o"
+export AICOMMIT_STYLE="conventional"
+export AICOMMIT_LANGUAGE="en"
 ```
 
 ## 🪝 Git Hook Integration

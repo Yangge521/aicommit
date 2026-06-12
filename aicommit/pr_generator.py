@@ -4,7 +4,7 @@ from .ai import AIError, generate_commit_message
 from .git_utils import (
     GitError,
     get_branch_name,
-    get_recent_commits,
+    get_repo_name,
     run_git,
 )
 

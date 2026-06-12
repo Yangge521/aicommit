@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 from rich.panel import Panel
 from rich.prompt import Confirm
+import platform
 
 from .ai import AIError, generate_commit_message
 from .config import (
@@ -16,6 +17,7 @@ from .conventional import (
     conventional_to_emoji,
     validate_conventional,
 )
+from .extra import generate_changelog, generate_squash_message
 from .git_utils import (
     GitError,
     amend_commit,
@@ -168,11 +170,51 @@ from .render import (
     default=None,
     help="Generate shell completion script",
 )
-@click.version_option(version="1.2.0", prog_name="aicommit")
+@click.option(
+    "--review",
+    is_flag=True,
+    help="Run AI code review on staged changes",
+)
+@click.option(
+    "--severity",
+    type=click.Choice(["all", "high", "medium", "low"]),
+    default="all",
+    help="Minimum severity for review (default: all)",
+)
+@click.option(
+    "--squash",
+    type=int,
+    default=None,
+    metavar="N",
+    help="Generate squash message from last N commits",
+)
+@click.option(
+    "--changelog",
+    is_flag=True,
+    help="Generate a changelog entry from recent commits",
+)
+@click.option(
+    "--version-tag",
+    default="",
+    help="Version tag for changelog (e.g., v1.2.0)",
+)
+@click.option(
+    "--copy",
+    is_flag=True,
+    help="Copy generated message to clipboard",
+)
+@click.option(
+    "--max-tokens",
+    type=int,
+    default=None,
+    help="Override max tokens for AI response",
+)
+@click.version_option(version="1.3.0", prog_name="aicommit")
 def main(style, auto_yes, dry_run, message, edit, scope, signoff, no_verify,
          last, amend, template, run_config, reset_config_flag, status,
          hook_file, install_hook_flag, uninstall_hook_flag,
-         pr, pr_base, validate, auto_fix, completion):
+         pr, pr_base, validate, auto_fix, completion,
+         review, severity, squash, changelog, version_tag, copy, max_tokens):
     """AI-powered git commit message generator.
 
     Run `aicommit` in any git repo with staged changes.
@@ -206,6 +248,21 @@ def main(style, auto_yes, dry_run, message, edit, scope, signoff, no_verify,
     # ── PR mode ────────────────────────────────────────────
     if pr:
         _run_pr_mode(pr_base, message)
+        return
+
+    # ── Review mode ────────────────────────────────────────
+    if review:
+        _run_review_mode(severity, message)
+        return
+
+    # ── Squash mode ────────────────────────────────────────
+    if squash:
+        _run_squash_mode(squash, style, message)
+        return
+
+    # ── Changelog mode ─────────────────────────────────────
+    if changelog:
+        _run_changelog_mode(version_tag, message, style)
         return
 
     # ── Install/Uninstall hook ─────────────────────────────
@@ -361,6 +418,7 @@ def main(style, auto_yes, dry_run, message, edit, scope, signoff, no_verify,
                 breaking_hint=breaking_hint,
                 file_list=file_list_str,
                 template=custom_template,
+                max_tokens_override=max_tokens,
             )
             progress.remove_task(task)
 
@@ -386,8 +444,11 @@ def main(style, auto_yes, dry_run, message, edit, scope, signoff, no_verify,
         show_message_preview(commit_msg, commit_style, scope=scope or "")
         show_stats(result.tokens_in, result.tokens_out, result.time_ms, result.model)
 
+        # ── Copy to clipboard ─────────────────────────────────
+        if copy:
+            _copy_to_clipboard(commit_msg)
+
         # ── Edit mode ───────────────────────────────────────
-        commit_msg = commit_msg
         if edit:
             edited = click.edit(commit_msg)
             if edited is not None:
@@ -606,6 +667,156 @@ def _run_hook_mode(commit_msg_file: str):
     except Exception:
         # Hook should never block a commit
         pass
+
+
+def _run_squash_mode(num_commits: int, style: str, hint: str):
+    """Generate a squash commit message."""
+    from .ai import AIError as AIErr
+    from .git_utils import GitError as GitErr
+
+    if not is_git_repo():
+        console.print("[red]✗ Not a git repository.[/red]")
+        sys.exit(1)
+
+    config = load_config()
+    commit_style = style or config["commit"]["style"]
+    language = config["commit"]["language"]
+
+    with show_generating() as progress:
+        task = progress.add_task("", total=None)
+        try:
+            msg = generate_squash_message(num_commits, commit_style, language, hint)
+        except (GitErr, AIErr) as e:
+            progress.remove_task(task)
+            console.print(f"[red]✗ {e}[/red]")
+            sys.exit(1)
+        progress.remove_task(task)
+
+    console.print()
+    console.print(
+        Panel(
+            msg,
+            title=f"[bold]📦 Squash Message ({num_commits} commits)[/bold]",
+            border_style="green",
+            padding=(1, 2),
+        )
+    )
+
+
+def _run_changelog_mode(version: str, hint: str, style: str):
+    """Generate a changelog entry."""
+    from .ai import AIError as AIErr
+
+    if not is_git_repo():
+        console.print("[red]✗ Not a git repository.[/red]")
+        sys.exit(1)
+
+    config = load_config()
+    language = config["commit"]["language"]
+
+    with show_generating() as progress:
+        task = progress.add_task("", total=None)
+        try:
+            msg = generate_changelog(version, language, hint)
+        except AIErr as e:
+            progress.remove_task(task)
+            console.print(f"[red]✗ {e}[/red]")
+            sys.exit(1)
+        progress.remove_task(task)
+
+    console.print()
+    console.print(
+        Panel(
+            msg,
+            title=f"[bold]📝 Changelog{' v'+version if version else ''}[/bold]",
+            border_style="blue",
+            padding=(1, 2),
+        )
+    )
+
+
+def _run_review_mode(severity: str, hint: str):
+    """Run AI code review on staged changes."""
+    from .review import analyze_diff
+    from .ai import AIError as AIErr
+    from .git_utils import GitError as GitErr
+
+    if not is_git_repo():
+        console.print("[red]✗ Not a git repository.[/red]")
+        sys.exit(1)
+
+    if not has_staged_changes():
+        console.print("[yellow]ℹ No staged changes. Stage files with `git add` first.[/yellow]")
+        sys.exit(0)
+
+    config = load_config()
+    if not config["api"]["key"]:
+        console.print("[yellow]⚠ First time? Let's set up your AI provider.[/yellow]")
+        config = setup_wizard()
+        if not config["api"]["key"]:
+            console.print("[red]✗ API key required.[/red]")
+            sys.exit(1)
+
+    try:
+        files = get_staged_files()
+        diff = get_staged_diff(
+            max_lines=config["commit"]["max_diff_lines"],
+            skip_noise=True,
+        )
+        stats = get_staged_stats()
+
+        show_diff_summary(files, stats, scope="review", branch_type="", breaking=False)
+
+        console.print("\n[bold cyan]🔍 AI Code Review[/bold cyan]")
+        console.print("[dim]Analyzing staged changes...[/dim]\n")
+
+        with show_generating() as progress:
+            task = progress.add_task("", total=None)
+            result = analyze_diff(diff, severity, hint)
+            progress.remove_task(task)
+
+        console.print()
+        console.print(
+            Panel(
+                result,
+                title="[bold]🔍 Review Results[/bold]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+    except (GitErr, AIErr) as e:
+        console.print(f"[red]✗ {e}[/red]")
+        sys.exit(1)
+
+
+def _copy_to_clipboard(text: str):
+    """Copy text to clipboard using native platform tools."""
+    import shutil
+    import subprocess as sp
+
+    try:
+        import pyperclip
+        pyperclip.copy(text)
+        console.print("[dim]📋 Copied to clipboard[/dim]")
+        return
+    except ImportError:
+        pass
+
+    try:
+        if platform.system() == "Windows":
+            sp.run(["clip"], input=text, text=True, creationflags=0x08000000)
+        elif platform.system() == "Darwin":
+            sp.run(["pbcopy"], input=text, text=True)
+        elif shutil.which("xclip"):
+            sp.run(["xclip", "-selection", "clipboard"], input=text, text=True)
+        elif shutil.which("xsel"):
+            sp.run(["xsel", "--clipboard", "--input"], input=text, text=True)
+        else:
+            console.print("[dim]ℹ Install `pyperclip` for automatic clipboard support[/dim]")
+            return
+        console.print("[dim]📋 Copied to clipboard[/dim]")
+    except Exception:
+        console.print("[dim]ℹ Could not copy to clipboard[/dim]")
 
 
 if __name__ == "__main__":

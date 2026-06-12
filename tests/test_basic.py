@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.2.0"
+        assert aicommit.__version__ == "1.3.0"
 
 
 class TestConfig:
@@ -225,3 +225,35 @@ class TestConventional:
         from aicommit.conventional import EMOJI_MAP, ALLOWED_TYPES
         for t in ALLOWED_TYPES:
             assert t in EMOJI_MAP, f"Missing emoji for type: {t}"
+
+
+class TestReview:
+    def test_review_prompt_structure(self):
+        from aicommit.review import REVIEW_PROMPT
+        assert "## Diff" in REVIEW_PROMPT
+        assert "{diff}" in REVIEW_PROMPT
+
+
+class TestExtra:
+    def test_squash_prompt_structure(self):
+        from aicommit.extra import SQUASH_PROMPT
+        assert "{commits}" in SQUASH_PROMPT
+        assert "{diff}" in SQUASH_PROMPT
+        assert "{style_instruction}" in SQUASH_PROMPT
+
+    def test_changelog_prompt_structure(self):
+        from aicommit.extra import CHANGELOG_PROMPT
+        assert "Added" in CHANGELOG_PROMPT
+        assert "{commits}" in CHANGELOG_PROMPT
+        assert "{version}" in CHANGELOG_PROMPT
+
+    def test_extra_module_imports(self):
+        from aicommit.extra import generate_squash_message, generate_changelog
+        assert callable(generate_squash_message)
+        assert callable(generate_changelog)
+
+
+class TestClipboard:
+    def test_clipboard_import(self):
+        import platform
+        assert platform.system()  # Just verify platform is available

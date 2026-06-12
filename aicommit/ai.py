@@ -35,6 +35,7 @@ def generate_commit_message(
     breaking_hint: str = "",
     file_list: str = "",
     template: Optional[str] = None,
+    max_tokens_override: Optional[int] = None,
 ) -> AIResult:
     """Generate a commit message using the configured AI provider.
 
@@ -98,6 +99,7 @@ def generate_commit_message(
     # Make API call with proper timeout
     start_time = time.time()
     timeout = httpx.Timeout(60.0, connect=15.0)
+    max_tok = max_tokens_override if max_tokens_override is not None else 500
 
     try:
         with httpx.Client(timeout=timeout) as client:
@@ -114,7 +116,7 @@ def generate_commit_message(
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 500,
+                    "max_tokens": max_tok,
                 },
             )
             response.raise_for_status()
