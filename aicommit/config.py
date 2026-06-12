@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
         "signoff": False,
         "no_verify": False,
     },
+    "templates": {},
 }
 
 
@@ -115,6 +116,14 @@ def save_config(config: dict) -> None:
         f"no_verify = {str(config['commit'].get('no_verify', False)).lower()}",
         "",
     ]
+
+    # Templates section
+    templates = config.get("templates", {})
+    if templates:
+        lines.append("[templates]")
+        for name, fmt in templates.items():
+            lines.append(f'{name} = {json.dumps(fmt, ensure_ascii=False)}')
+        lines.append("")
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
@@ -281,3 +290,49 @@ def get_config_value(key_path: str) -> str:
     if key not in config[section]:
         raise ValueError(f"Unknown key '{key}' in section '{section}'")
     return str(config[section][key])
+
+
+# ── Message template management ──────────────────────────────────────
+
+# Available template variables (for user reference)
+TEMPLATE_VARIABLES = {
+    "{type}": "Commit type (feat, fix, chore, etc.)",
+    "{scope}": "Scope of changes",
+    "{description}": "Short description of the change",
+    "{body}": "Detailed body text",
+    "{emoji}": "Gitmoji character",
+    "{branch}": "Current branch name",
+    "{breaking}": "'!' if breaking change, empty otherwise",
+}
+
+
+def save_message_template(name: str, fmt: str) -> None:
+    """Save a named message template to config."""
+    config = load_config()
+    if "templates" not in config:
+        config["templates"] = {}
+    config["templates"][name] = fmt
+    save_config(config)
+
+
+def delete_message_template(name: str) -> bool:
+    """Delete a named message template. Returns True if deleted."""
+    config = load_config()
+    templates = config.get("templates", {})
+    if name not in templates:
+        return False
+    del config["templates"][name]
+    save_config(config)
+    return True
+
+
+def list_message_templates() -> dict:
+    """Return all saved message templates."""
+    config = load_config()
+    return config.get("templates", {})
+
+
+def get_message_template(name: str) -> str | None:
+    """Get a named message template by name, or None."""
+    config = load_config()
+    return config.get("templates", {}).get(name)

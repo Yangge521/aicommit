@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.6.0"
+        assert aicommit.__version__ == "1.7.0"
 
 
 class TestConfig:
@@ -432,3 +432,118 @@ class TestSetupWizardDeepcopy:
         # After loading, DEFAULT_CONFIG should be untouched
         assert DEFAULT_CONFIG["api"] == original_api
         assert DEFAULT_CONFIG["commit"] == original_commit
+
+
+class TestParseCommitMessage:
+    def test_parse_conventional(self):
+        from aicommit.cli import _parse_commit_message
+        result = _parse_commit_message("feat(auth): add login page\n\nImplemented OAuth2 flow.", "conventional")
+        assert result["type"] == "feat"
+        assert result["scope"] == "auth"
+        assert result["description"] == "add login page"
+        assert "OAuth2" in result["body"]
+        assert result["breaking"] == ""
+
+    def test_parse_conventional_breaking(self):
+        from aicommit.cli import _parse_commit_message
+        result = _parse_commit_message("feat(api)!: change endpoint format", "conventional")
+        assert result["type"] == "feat"
+        assert result["scope"] == "api"
+        assert result["breaking"] == "!"
+        assert result["description"] == "change endpoint format"
+
+    def test_parse_conventional_no_scope(self):
+        from aicommit.cli import _parse_commit_message
+        result = _parse_commit_message("docs: update README", "conventional")
+        assert result["type"] == "docs"
+        assert result["scope"] == ""
+        assert result["description"] == "update README"
+
+    def test_parse_emoji(self):
+        from aicommit.cli import _parse_commit_message
+        result = _parse_commit_message("✨ Add new feature", "emoji")
+        assert result["emoji"] == "✨"
+        assert result["description"] == "Add new feature"
+
+    def test_parse_simple(self):
+        from aicommit.cli import _parse_commit_message
+        result = _parse_commit_message("Fix crash on startup\n\nRoot cause was null pointer.", "simple")
+        assert result["description"] == "Fix crash on startup"
+        assert "null pointer" in result["body"]
+
+
+class TestApplyMessageTemplate:
+    def test_template_conventional_format(self):
+        from aicommit.cli import _apply_message_template
+        msg = "feat(auth): add login page"
+        tmpl = "[{type}] {description}"
+        result = _apply_message_template(msg, tmpl, "conventional")
+        assert result == "[feat] add login page"
+
+    def test_template_emoji_with_scope(self):
+        from aicommit.cli import _apply_message_template
+        msg = "feat(api)!: change endpoint format"
+        tmpl = "{emoji} {type}({scope}){breaking}: {description}"
+        result = _apply_message_template(msg, tmpl, "conventional")
+        assert result == "feat(api)!: change endpoint format"
+
+    def test_template_with_branch(self):
+        from aicommit.cli import _apply_message_template
+        msg = "fix: resolve timeout"
+        tmpl = "{type}({branch}): {description}"
+        result = _apply_message_template(msg, tmpl, "conventional", branch="feature/api")
+        assert result == "fix(feature/api): resolve timeout"
+
+    def test_template_empty_vars_cleaned(self):
+        from aicommit.cli import _apply_message_template
+        msg = "Add feature"
+        tmpl = "{type}{scope}: {description}"
+        result = _apply_message_template(msg, tmpl, "simple")
+        assert result == ": Add feature"
+
+
+class TestMessageTemplateConfig:
+    def test_templates_in_default_config(self):
+        from aicommit.config import DEFAULT_CONFIG
+        assert "templates" in DEFAULT_CONFIG
+        assert DEFAULT_CONFIG["templates"] == {}
+
+    def test_save_and_list_template(self):
+        from aicommit.config import save_message_template, list_message_templates, delete_message_template
+        save_message_template("test_tmpl", "{type}: {description}")
+        templates = list_message_templates()
+        assert "test_tmpl" in templates
+        assert templates["test_tmpl"] == "{type}: {description}"
+        # Cleanup
+        delete_message_template("test_tmpl")
+
+    def test_delete_nonexistent_template(self):
+        from aicommit.config import delete_message_template
+        result = delete_message_template("nonexistent_xyz")
+        assert result is False
+
+    def test_get_template(self):
+        from aicommit.config import save_message_template, get_message_template, delete_message_template
+        save_message_template("get_test", "{type}: {scope}")
+        fmt = get_message_template("get_test")
+        assert fmt == "{type}: {scope}"
+        fmt_none = get_message_template("nonexistent")
+        assert fmt_none is None
+        delete_message_template("get_test")
+
+    def test_templates_persist_in_config(self):
+        from aicommit.config import save_message_template, load_config, delete_message_template
+        save_message_template("persist_tmpl", "{emoji} {description}")
+        config = load_config()
+        assert "persist_tmpl" in config.get("templates", {})
+        assert config["templates"]["persist_tmpl"] == "{emoji} {description}"
+        delete_message_template("persist_tmpl")
+
+
+class TestEditorCmdOverride:
+    def test_edit_message_signature(self):
+        from aicommit.cli import _edit_message
+        import inspect
+        sig = inspect.signature(_edit_message)
+        params = list(sig.parameters.keys())
+        assert "editor_cmd" in params

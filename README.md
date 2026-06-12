@@ -2,10 +2,10 @@
 
 > 🚀 **AI writes your git commit messages. You ship code.**
 
-[![PyPI](https://img.shields.io/badge/pypi-v1.6.0-blue)](https://pypi.org/project/aicommit/)
+[![PyPI](https://img.shields.io/badge/pypi-v1.7.0-blue)](https://pypi.org/project/aicommit/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-55%20passed-brightgreen)](.)
+[![Tests](https://img.shields.io/badge/tests-70%20passed-brightgreen)](.)
 
 Stop staring at your terminal wondering what commit message to write. **aicommit** reads your staged changes, understands your code, and generates the perfect commit message — in any style you want.
 
@@ -30,6 +30,8 @@ Stop staring at your terminal wondering what commit message to write. **aicommit
 - 💾 **Save Output** — Save generated messages to file (`--output`/`-o`)
 - 📊 **Enhanced Stats** — Per-repo, per-model breakdown with date range
 - 🔍 **Log Filtering** — Filter history by repo or style (`--log-repo`, `--log-style`)
+- 📋 **Message Templates** — Save/apply named message format templates (`--msg-template`)
+- ✏️ **Editor Command** — Specify custom editor via `--editor-cmd` (e.g. `--editor-cmd "code --wait"`)
 - 🔤 **Shell Completions** — bash, zsh, fish, PowerShell
 - 🪝 **Git Hook** — Install as prepare-commit-msg hook
 - 📋 **Clipboard** — Auto-copy with `--copy`
@@ -180,6 +182,27 @@ generated/*
 ```
 
 Patterns use the same glob syntax as `.gitignore` and are merged with built-in noise filtering.
+
+### 📋 Message Templates
+
+Save named templates to format commit messages your way:
+
+```bash
+# Save a template
+   aicommit --msg-template-save feat_only="{type}: {description}"
+   aicommit --msg-template-save emoji_header="{emoji} {type}({scope}): {description}"
+
+# List saved templates
+   aicommit --msg-template-list
+
+# Apply a template
+   aicommit --msg-template feat_only
+
+# Delete a template
+   aicommit --msg-template-delete feat_only
+```
+
+Template variables available: `{type}`, `{scope}`, `{description}`, `{body}`, `{emoji}`, `{breaking}`, `{branch}`.
 
 ### 🔎 Code Review
 
@@ -362,6 +385,17 @@ pytest
 ```
 
 ## 📝 Changelog
+
+### v1.7.0
+
+- 📋 Message template system: save/apply named message format templates
+  - `--msg-template NAME` apply saved template
+  - `--msg-template-save NAME=FORMAT` save a template
+  - `--msg-template-list` list all saved templates
+  - `--msg-template-delete NAME` delete a template
+  - Template variables: `{type}`, `{scope}`, `{description}`, `{body}`, `{emoji}`, `{breaking}`, `{branch}`
+- ✏️ `--editor-cmd` flag to override `$EDITOR` (e.g. `--editor-cmd "code --wait"`)
+- 70 tests (15 new)
 
 ### v1.6.0
 

@@ -16,12 +16,17 @@ from .__init__ import __version__
 from .ai import AIError as AIErr, AIResult, generate_commit_message
 from .config import (
     CONFIG_FILE,
+    TEMPLATE_VARIABLES,
+    delete_message_template,
     get_config_value,
+    get_message_template,
+    list_message_templates,
     load_config,
     load_history,
     reset_config,
     save_config,
     save_history,
+    save_message_template,
     set_config_value,
     setup_wizard,
 )
@@ -108,6 +113,14 @@ from .render import console, show_diff_summary, show_generating
               help="Filter log by commit style")
 @click.option("--output", "-o", "output_file", default=None, help="Save generated message to a file")
 @click.option("--hook", "hook_file", default=None, hidden=True, help="Internal: used by git hook")
+@click.option("--msg-template", "msg_template_name", default=None, help="Apply a named message template to format output")
+@click.option("--msg-template-save", "msg_template_save", default=None, metavar="NAME=FORMAT",
+              help='Save a message template (e.g. --msg-template-save myfmt="{type}({scope}): {description}")')
+@click.option("--msg-template-list", "msg_template_list", is_flag=True, help="List saved message templates")
+@click.option("--msg-template-delete", "msg_template_delete", default=None, metavar="NAME",
+              help="Delete a saved message template")
+@click.option("--editor-cmd", "editor_cmd_override", default=None, metavar="EDITOR",
+              help="Editor command to use with -e (e.g. --editor-cmd vim)")
 def main(
     style, hint, dry_run, auto_yes, edit, scope, signoff, no_verify,
     last, amend, template_file, auto_stage, co_author, issue_ref, choose_mode,
@@ -119,6 +132,8 @@ def main(
     squash_n, changelog, version_tag,
     validate, auto_fix,
     shell, copy, show_log, log_repo, log_style, output_file, hook_file,
+    msg_template_name, msg_template_save, msg_template_list, msg_template_delete,
+    editor_cmd_override,
 ):
     """AI-powered git commit message generator.
 
@@ -169,6 +184,15 @@ def main(
         return
     if hook_file:
         _run_hook_mode(hook_file)
+        return
+    if msg_template_list:
+        _run_template_list()
+        return
+    if msg_template_save:
+        _run_template_save(msg_template_save)
+        return
+    if msg_template_delete:
+        _run_template_delete(msg_template_delete)
         return
 
     # ── Sub-commands that need a git repo ────────────
@@ -231,7 +255,7 @@ def main(
 
     # Handle --last (generate message for existing commit)
     if last:
-        _run_last_mode(commit_style, language, hint, amend, signoff, no_verify, copy, output_file)
+        _run_last_mode(commit_style, language, hint, amend, signoff, no_verify, copy, output_file, msg_template_name)
         return
 
     # Normal commit flow
@@ -339,13 +363,25 @@ def main(
         # Edit
         final_msg = result.message
 
+        # Apply message template if specified
+        if msg_template_name:
+            tmpl = get_message_template(msg_template_name)
+            if tmpl:
+                final_msg = _apply_message_template(
+                    final_msg, tmpl, commit_style,
+                    branch=get_branch_name(),
+                )
+                console.print(f"[dim]📋 Template '{msg_template_name}' applied[/dim]")
+            else:
+                console.print(f"[yellow]⚠ Template '{msg_template_name}' not found. Use --msg-template-list to see saved templates.[/yellow]")
+
         # Body wrapping for detailed style
         if commit_style == "detailed" and "\n\n" in final_msg:
             from .conventional import wrap_body
             final_msg = wrap_body(final_msg)
 
         if edit:
-            final_msg = _edit_message(final_msg)
+            final_msg = _edit_message(final_msg, editor_cmd_override)
 
         # Add co-author trailers
         for author in co_author:
@@ -408,7 +444,7 @@ def _auto_stage_changes():
         sys.exit(1)
 
 
-def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: bool, no_verify: bool, copy: bool, output_file: str = None):
+def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: bool, no_verify: bool, copy: bool, output_file: str = None, msg_template_name: str = None):
     """Generate message for last commit (amend)."""
     config = load_config()
     if not config["api"]["key"]:
@@ -449,9 +485,23 @@ def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: b
             progress.remove_task(task)
 
         console.print()
+
+        # Apply message template if specified
+        final_msg = result.message
+        if msg_template_name:
+            tmpl = get_message_template(msg_template_name)
+            if tmpl:
+                final_msg = _apply_message_template(
+                    final_msg, tmpl, style,
+                    branch=get_branch_name(),
+                )
+                console.print(f"[dim]📋 Template '{msg_template_name}' applied[/dim]")
+            else:
+                console.print(f"[yellow]⚠ Template '{msg_template_name}' not found.[/yellow]")
+
         console.print(
             Panel(
-                result.message,
+                final_msg,
                 title="[bold]📝 Amended Message[/bold]",
                 border_style="cyan",
                 padding=(1, 2),
@@ -459,13 +509,13 @@ def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: b
         )
 
         if copy:
-            _copy_to_clipboard(result.message)
+            _copy_to_clipboard(final_msg)
 
         if output_file:
-            _save_to_file(result.message, output_file)
+            _save_to_file(final_msg, output_file)
 
         if amend:
-            amend_args = ["commit", "--amend", "-m", result.message]
+            amend_args = ["commit", "--amend", "-m", final_msg]
             if signoff:
                 amend_args.append("--signoff")
             if no_verify:
@@ -730,9 +780,17 @@ def _run_log(repo_filter: str = None, style_filter: str = None):
     console.print(f"[dim]History file: ~/.aicommit/history.jsonl[/dim]")
 
 
-def _edit_message(message: str) -> str:
-    """Open message in $EDITOR for user editing."""
-    editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "notepad" if platform.system() == "Windows" else "vim"))
+def _edit_message(message: str, editor_cmd: str | None = None) -> str:
+    """Open message in $EDITOR for user editing.
+
+    Args:
+        message: The commit message to edit.
+        editor_cmd: Override editor command (e.g. 'vim', 'code --wait').
+    """
+    if editor_cmd:
+        editor = editor_cmd
+    else:
+        editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "notepad" if platform.system() == "Windows" else "vim"))
 
     fd, tmp_path = tempfile.mkstemp(suffix=".txt", prefix="aicommit_", text=True)
     try:
@@ -1075,6 +1133,136 @@ def _save_to_file(content: str, filepath: str):
         console.print(f"[dim]💾 Saved to {p.absolute()}[/dim]")
     except Exception as e:
         console.print(f"[red]✗ Failed to save: {e}[/red]")
+
+
+def _parse_commit_message(message: str, style: str) -> dict:
+    """Parse a commit message into components based on style.
+
+    Returns dict with keys: type, scope, description, body, emoji, breaking.
+    """
+    import re
+
+    result = {
+        "type": "",
+        "scope": "",
+        "description": "",
+        "body": "",
+        "emoji": "",
+        "breaking": "",
+    }
+
+    # Split header and body
+    parts = message.split("\n\n", 1)
+    header = parts[0].strip()
+    body = parts[1].strip() if len(parts) > 1 else ""
+    result["body"] = body
+
+    if style == "conventional":
+        # Parse: type(scope)!: description
+        m = re.match(r'^(\w+)(?:\(([^)]*)\))?(!)?\s*:\s*(.*)$', header)
+        if m:
+            result["type"] = m.group(1) or ""
+            result["scope"] = m.group(2) or ""
+            result["breaking"] = m.group(3) or ""
+            result["description"] = m.group(4).strip() or ""
+        else:
+            result["description"] = header
+    elif style == "emoji":
+        # Parse: emoji description
+        m = re.match(r'^([^\w\s]\s*)(.*)$', header)
+        if m:
+            result["emoji"] = m.group(1).strip()
+            result["description"] = m.group(2).strip()
+        else:
+            result["description"] = header
+    elif style in ("simple", "detailed"):
+        # Just description + body
+        result["description"] = header
+    else:
+        result["description"] = header
+
+    return result
+
+
+def _apply_message_template(message: str, template_fmt: str, style: str, **extra_vars) -> str:
+    """Apply a message template format to a parsed commit message.
+
+    Template variables: {type}, {scope}, {description}, {body}, {emoji},
+        {breaking}, {branch}.
+
+    Args:
+        message: The original AI-generated commit message.
+        template_fmt: Template format string with {var} placeholders.
+        style: The commit style used to generate the message.
+        **extra_vars: Additional variables (branch, etc.).
+
+    Returns:
+        Formatted commit message.
+    """
+    import re as _re
+    parsed = _parse_commit_message(message, style)
+    # Merge extra vars (prefer extra over parsed)
+    vars_dict = dict(parsed)
+    vars_dict.update(extra_vars)
+    vars_dict.setdefault("branch", "")
+
+    result = template_fmt
+    for key, val in vars_dict.items():
+        result = result.replace(f"{{{key}}}", str(val) if val else "")
+    # Clean up double spaces from empty replacements
+    result = _re.sub(r'  +', ' ', result)
+    return result.strip()
+
+
+def _run_template_list():
+    """List all saved message templates."""
+    templates = list_message_templates()
+    if not templates:
+        console.print("[dim]No saved message templates.[/dim]")
+        console.print()
+        console.print("[dim]Create one with: aicommit --msg-template-save NAME=FORMAT[/dim]")
+        console.print("\nAvailable variables:")
+        for var, desc in TEMPLATE_VARIABLES.items():
+            console.print(f"  [cyan]{var}[/cyan] - {desc}")
+        return
+
+    table = Table(title="📋 Saved Message Templates", border_style="dim")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Format")
+    for name, fmt in templates.items():
+        table.add_row(name, fmt)
+    console.print(table)
+    console.print()
+    console.print("Apply with: [cyan]aicommit --msg-template NAME[/cyan]")
+
+
+def _run_template_save(arg: str):
+    """Save a named message template from NAME=FORMAT argument."""
+    if "=" not in arg:
+        console.print(
+            "[red]✗ Use format: --msg-template-save NAME=FORMAT[/red]\n"
+            'Example: [cyan]aicommit --msg-template-save myfmt="{type}({scope}): {description}"[/cyan]'
+        )
+        return
+    name, fmt = arg.split("=", 1)
+    name = name.strip()
+    fmt = fmt.strip()
+
+    if not name or not fmt:
+        console.print("[red]✗ Both name and format are required.[/red]")
+        return
+
+    save_message_template(name, fmt)
+    console.print(f"[green]✓ Template '{name}' saved.[/green]")
+    console.print(f"  Format: [dim]{fmt}[/dim]")
+
+
+def _run_template_delete(name: str):
+    """Delete a named message template."""
+    if delete_message_template(name):
+        console.print(f"[green]✓ Template '{name}' deleted.[/green]")
+    else:
+        console.print(f"[yellow]⚠ Template '{name}' not found.[/yellow]")
 
 
 if __name__ == "__main__":
