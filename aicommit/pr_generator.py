@@ -1,6 +1,6 @@
 """PR description generator for aicommit."""
 
-from .ai import AIError, generate_commit_message
+from .ai_client import AIError, call_ai
 from .git_utils import (
     GitError,
     get_branch_name,
@@ -15,7 +15,6 @@ def get_pr_diff(base_branch: str = "main") -> str:
         stat = run_git(["diff", f"{base_branch}...HEAD", "--stat"])
         diff = run_git(["diff", f"{base_branch}...HEAD", "--unified=3"])
     except GitError:
-        # Try origin/base
         try:
             stat = run_git(["diff", f"origin/{base_branch}...HEAD", "--stat"])
             diff = run_git(["diff", f"origin/{base_branch}...HEAD", "--unified=3"])
@@ -42,7 +41,7 @@ def get_commits_summary(base_branch: str = "main") -> str:
         return "(could not determine commits)"
 
 
-PR_PROMPT_TEMPLATE = """Generate a pull request description for the following changes.
+PR_PROMPT = """Generate a pull request description for the following changes.
 
 ## Diff:
 {diff}
@@ -59,8 +58,7 @@ Write a comprehensive PR description with these sections:
 3. **Testing** — How was this tested?
 4. **Screenshots** (if applicable) — Note if visual changes exist
 
-Keep it concise and professional. Do NOT include the section headers in code blocks.\
-Write in {language}."""
+Keep it concise and professional. Write in {language}."""
 
 
 def generate_pr_description(
@@ -73,72 +71,26 @@ def generate_pr_description(
     commits = get_commits_summary(base_branch)
     branch = get_branch_name()
 
-    prompt = PR_PROMPT_TEMPLATE.format(
-        diff=diff,
-        commits=commits,
-        branch=branch,
+    prompt = PR_PROMPT.format(
+        diff=diff, commits=commits, branch=branch,
         language="English" if language == "auto" else language,
     )
 
     if hint:
         prompt += f'\n\nAdditional context: "{hint}"'
 
-    # Reuse the AI call infrastructure
-    from .config import load_config
+    result = call_ai(
+        system_prompt="You are a professional software engineer writing clear, concise PR descriptions.",
+        user_prompt=prompt,
+        max_tokens=1500,
+        temperature=0.4,
+        timeout_sec=90.0,
+    )
 
-    config = load_config()
-    if not config["api"]["key"]:
-        raise AIError("No API key configured. Run `aicommit --config` to set up.")
-
-    import time
-    import httpx
-
-    endpoint = config["api"]["endpoint"].rstrip("/")
-    start_time = time.time()
-    timeout = httpx.Timeout(90.0, connect=15.0)
-
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(
-                f"{endpoint}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {config['api']['key']}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": config["api"]["model"],
-                    "messages": [
-                        {"role": "system", "content": "You are a professional software engineer writing clear, concise PR descriptions."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.4,
-                    "max_tokens": 1500,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if "choices" not in data or not data["choices"]:
-                raise AIError("Empty response from AI provider")
-
-            message = data["choices"][0]["message"]["content"].strip()
-
-            elapsed_ms = (time.time() - start_time) * 1000
-
-            # Show stats
-            from .render import console
-            usage = data.get("usage", {})
-            console.print(
-                f"[dim]Model: {config['api']['model']} | "
-                f"Tokens: {usage.get('prompt_tokens', 0)}→{usage.get('completion_tokens', 0)} | "
-                f"Time: {elapsed_ms:.0f}ms[/dim]"
-            )
-
-            return message
-
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            raise AIError("Invalid API key.")
-        raise AIError(f"API error ({e.response.status_code})")
-    except Exception as e:
-        raise AIError(f"Failed to generate PR description: {e}")
+    from .render import console
+    console.print(
+        f"[dim]Model: {result['model']} | "
+        f"Tokens: {result['prompt_tokens']}→{result['completion_tokens']} | "
+        f"Time: {result['time_ms']:.0f}ms[/dim]"
+    )
+    return result["content"]

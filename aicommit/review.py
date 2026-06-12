@@ -1,11 +1,6 @@
 """AI code review for aicommit."""
 
-import time
-
-import httpx
-
-from .ai import AIError
-from .config import load_config
+from .ai_client import AIError, call_ai
 
 REVIEW_PROMPT = """Analyze the following git diff for potential issues. Be thorough and practical.
 
@@ -27,11 +22,7 @@ If no issues found, just say "✅ No significant issues detected."
 {diff}"""
 
 
-def analyze_diff(
-    diff: str,
-    severity: str = "all",
-    hint: str = "",
-) -> str:
+def analyze_diff(diff: str, severity: str = "all", hint: str = "") -> str:
     """Analyze diff for code quality issues.
 
     Args:
@@ -39,66 +30,25 @@ def analyze_diff(
         severity: Minimum severity to report (all, high, medium, low)
         hint: Additional review focus area
     """
-    config = load_config()
-    if not config["api"]["key"]:
-        raise AIError("No API key configured. Run `aicommit --config` to set up.")
-
-    endpoint = config["api"]["endpoint"].rstrip("/")
-    start_time = time.time()
-    timeout = httpx.Timeout(90.0, connect=15.0)
-
     prompt = REVIEW_PROMPT.format(diff=diff)
 
     if hint:
         prompt += f'\n\n## Additional Focus\nFocus especially on: {hint}'
-
     if severity != "all":
         prompt += f'\n\nReport only {severity} severity issues and above.'
 
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(
-                f"{endpoint}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {config['api']['key']}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": config["api"]["model"],
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are a senior software engineer performing a thorough code review. Be specific, actionable, and fair. Cite line numbers from the diff when possible.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 2000,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+    result = call_ai(
+        system_prompt="You are a senior software engineer performing a thorough code review. Be specific, actionable, and fair. Cite line numbers when possible.",
+        user_prompt=prompt,
+        max_tokens=2000,
+        temperature=0.2,
+        timeout_sec=90.0,
+    )
 
-            if "choices" not in data or not data["choices"]:
-                raise AIError("Empty response from AI provider")
-
-            message = data["choices"][0]["message"]["content"].strip()
-
-            elapsed_ms = (time.time() - start_time) * 1000
-            usage = data.get("usage", {})
-
-            from .render import console
-            console.print(
-                f"[dim]Model: {config['api']['model']} | "
-                f"Tokens: {usage.get('prompt_tokens', 0)}→{usage.get('completion_tokens', 0)} | "
-                f"Time: {elapsed_ms:.0f}ms[/dim]"
-            )
-
-            return message
-
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            raise AIError("Invalid API key.")
-        raise AIError(f"API error ({e.response.status_code})")
-    except Exception as e:
-        raise AIError(f"Review failed: {e}")
+    from .render import console
+    console.print(
+        f"[dim]Model: {result['model']} | "
+        f"Tokens: {result['prompt_tokens']}→{result['completion_tokens']} | "
+        f"Time: {result['time_ms']:.0f}ms[/dim]"
+    )
+    return result["content"]

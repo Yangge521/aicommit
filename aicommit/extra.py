@@ -1,15 +1,11 @@
 """Changelog and squash commit message generation."""
 
-import time
-
-import httpx
-
-from .ai import AIError
+from .ai_client import AIError, call_ai
 from .config import load_config
-from .git_utils import GitError, get_branch_name, get_recent_commits, run_git
+from .git_utils import GitError, get_recent_commits, run_git
+
 
 # ── Squash message generation ─────────────────────────
-
 
 SQUASH_PROMPT = """Generate a single, well-crafted commit message that summarizes all these commits:
 
@@ -37,11 +33,6 @@ def generate_squash_message(
     hint: str = "",
 ) -> str:
     """Generate a single commit message summarizing the last N commits."""
-    config = load_config()
-    if not config["api"]["key"]:
-        raise AIError("No API key configured.")
-
-    # Get commits
     try:
         commit_msgs = get_recent_commits(num_commits)
     except GitError:
@@ -50,11 +41,9 @@ def generate_squash_message(
     if not commit_msgs:
         raise GitError("No commits found.")
 
-    # Get combined diff
     try:
         diff = run_git(["diff", f"HEAD~{num_commits}..HEAD", "--unified=3"])
     except GitError:
-        # Try with fewer commits
         try:
             diff = run_git(["diff", "HEAD~1..HEAD", "--unified=3"])
             commit_msgs = get_recent_commits(1)
@@ -75,8 +64,7 @@ def generate_squash_message(
     }
 
     prompt = SQUASH_PROMPT.format(
-        commits=commits_text,
-        diff=diff,
+        commits=commits_text, diff=diff,
         style_instruction=style_map.get(style, style_map["conventional"]),
         language="English" if language == "auto" else language,
     )
@@ -84,62 +72,30 @@ def generate_squash_message(
     if hint:
         prompt += f'\n\nContext: "{hint}"'
 
-    endpoint = config["api"]["endpoint"].rstrip("/")
-    start_time = time.time()
-    timeout = httpx.Timeout(90.0, connect=15.0)
+    result = call_ai(
+        system_prompt="You write clean, descriptive git commit messages.",
+        user_prompt=prompt,
+        max_tokens=500,
+        temperature=0.4,
+        timeout_sec=90.0,
+    )
 
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(
-                f"{endpoint}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {config['api']['key']}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": config["api"]["model"],
-                    "messages": [
-                        {"role": "system", "content": "You write clean, descriptive git commit messages."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.4,
-                    "max_tokens": 500,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if "choices" not in data or not data["choices"]:
-                raise AIError("Empty response from AI provider")
-
-            message = data["choices"][0]["message"]["content"].strip()
-
-            elapsed_ms = (time.time() - start_time) * 1000
-            usage = data.get("usage", {})
-
-            from .render import console
-            console.print(
-                f"[dim]Model: {config['api']['model']} | "
-                f"Tokens: {usage.get('prompt_tokens', 0)}→{usage.get('completion_tokens', 0)} | "
-                f"Time: {elapsed_ms:.0f}ms[/dim]"
-            )
-
-            return message
-
-    except httpx.HTTPStatusError as e:
-        raise AIError(f"API error ({e.response.status_code})")
-    except Exception as e:
-        raise AIError(f"Squash generation failed: {e}")
+    from .render import console
+    console.print(
+        f"[dim]Model: {result['model']} | "
+        f"Tokens: {result['prompt_tokens']}→{result['completion_tokens']} | "
+        f"Time: {result['time_ms']:.0f}ms[/dim]"
+    )
+    return result["content"]
 
 
 # ── Changelog generation ────────────────────────────
-
 
 CHANGELOG_PROMPT = """Generate a changelog entry from these git commits.
 
 ## Repository: {repo}
 ## Version: {version}
-## Commits since last release:
+## Commits:
 {commits}
 
 ## Instructions
@@ -154,17 +110,27 @@ Write in {language}."""
 def get_commits_since_tag(version: str = "") -> str:
     """Get formatted commit log since the last tag."""
     try:
-        # Get last tag
-        last_tag = ""
-        if not version:
-            tags = run_git(["tag", "--sort=-creatordate"])
-            if tags:
-                last_tag = tags.split("\n")[0].strip()
-        else:
-            last_tag = version
+        tags = run_git(["tag", "--sort=-creatordate"])
+        tags_list = [t for t in tags.strip().split("\n") if t]
 
-        commits = get_recent_commits(30)
-        return "\n".join(f"  • {c}" for c in commits)
+        if version and version in tags_list:
+            # Commits since the specified tag
+            commit_log = run_git(["log", f"{version}..HEAD", "--oneline", "--no-merges"])
+        elif tags_list:
+            # Commits since the most recent tag
+            last_tag = tags_list[0]
+            commit_log = run_git(["log", f"{last_tag}..HEAD", "--oneline", "--no-merges"])
+        else:
+            # No tags at all — fallback to last 30 commits
+            commit_log = run_git(["log", "-30", "--oneline", "--no-merges"])
+            if not commit_log.strip():
+                return "(no commits found)"
+
+        if not commit_log.strip():
+            return "(no new commits since tag)"
+
+        commits = commit_log.strip().split("\n")
+        return "\n".join(f"  • {c}" for c in commits[:50])
     except GitError:
         return "(could not retrieve commits)"
 
@@ -175,10 +141,6 @@ def generate_changelog(
     hint: str = "",
 ) -> str:
     """Generate a changelog entry from commits."""
-    config = load_config()
-    if not config["api"]["key"]:
-        raise AIError("No API key configured.")
-
     from .git_utils import get_repo_name
 
     repo = get_repo_name()
@@ -186,58 +148,25 @@ def generate_changelog(
     ver = version or "next"
 
     prompt = CHANGELOG_PROMPT.format(
-        repo=repo,
-        version=ver,
-        commits=commits_text,
+        repo=repo, version=ver, commits=commits_text,
         language="English" if language == "auto" else language,
     )
 
     if hint:
         prompt += f'\n\nFocus on: "{hint}"'
 
-    endpoint = config["api"]["endpoint"].rstrip("/")
-    start_time = time.time()
-    timeout = httpx.Timeout(90.0, connect=15.0)
+    result = call_ai(
+        system_prompt="You write professional changelogs following Keep a Changelog format.",
+        user_prompt=prompt,
+        max_tokens=1500,
+        temperature=0.5,
+        timeout_sec=90.0,
+    )
 
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(
-                f"{endpoint}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {config['api']['key']}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": config["api"]["model"],
-                    "messages": [
-                        {"role": "system", "content": "You write professional changelogs following Keep a Changelog format."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.5,
-                    "max_tokens": 1500,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if "choices" not in data or not data["choices"]:
-                raise AIError("Empty response from AI provider")
-
-            message = data["choices"][0]["message"]["content"].strip()
-
-            elapsed_ms = (time.time() - start_time) * 1000
-            usage = data.get("usage", {})
-
-            from .render import console
-            console.print(
-                f"[dim]Model: {config['api']['model']} | "
-                f"Tokens: {usage.get('prompt_tokens', 0)}→{usage.get('completion_tokens', 0)} | "
-                f"Time: {elapsed_ms:.0f}ms[/dim]"
-            )
-
-            return message
-
-    except httpx.HTTPStatusError as e:
-        raise AIError(f"API error ({e.response.status_code})")
-    except Exception as e:
-        raise AIError(f"Changelog generation failed: {e}")
+    from .render import console
+    console.print(
+        f"[dim]Model: {result['model']} | "
+        f"Tokens: {result['prompt_tokens']}→{result['completion_tokens']} | "
+        f"Time: {result['time_ms']:.0f}ms[/dim]"
+    )
+    return result["content"]

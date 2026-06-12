@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.3.0"
+        assert aicommit.__version__ == "1.4.0"
 
 
 class TestConfig:
@@ -20,7 +20,22 @@ class TestConfig:
         assert "signoff" in DEFAULT_CONFIG["commit"]
         assert "no_verify" in DEFAULT_CONFIG["commit"]
 
-    def test_deep_merge(self):
+    def test_config_has_provider(self):
+        from aicommit.config import DEFAULT_CONFIG
+        assert "provider" in DEFAULT_CONFIG["api"]
+        assert DEFAULT_CONFIG["api"]["provider"] == "openai"
+        assert "temperature" in DEFAULT_CONFIG["api"]
+        assert DEFAULT_CONFIG["api"]["temperature"] == 0.3
+
+    def test_env_override_provider(self, monkeypatch):
+        from aicommit.config import DEFAULT_CONFIG, load_config
+        monkeypatch.setenv("AICOMMIT_PROVIDER", "anthropic")
+        monkeypatch.setenv("AICOMMIT_TEMPERATURE", "0.7")
+        monkeypatch.setenv("AICOMMIT_MODEL", "claude-3-haiku")
+        config = load_config()
+        assert config["api"]["provider"] == "anthropic"
+        assert config["api"]["temperature"] == 0.7
+        assert config["api"]["model"] == "claude-3-haiku"
         from aicommit.config import _deep_merge
         base = {"a": {"b": 1, "c": 2}, "d": 3}
         override = {"a": {"b": 10}}

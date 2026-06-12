@@ -1,33 +1,34 @@
-"""CLI entry point for aicommit."""
+"""Command-line interface for aicommit."""
 
+import os
+import platform
+import subprocess as sp
 import sys
+import tempfile
 from pathlib import Path
 
 import click
 from rich.panel import Panel
 from rich.prompt import Confirm
-import platform
 
-from .ai import AIError, generate_commit_message
+from .__init__ import __version__
+from .ai import AIError as AIErr, generate_commit_message
 from .config import (
-    load_config, save_config, setup_wizard, reset_config,
+    CONFIG_FILE,
+    load_config,
+    load_history,
+    reset_config,
+    save_config,
+    save_history,
+    setup_wizard,
 )
-from .conventional import (
-    auto_fix_conventional,
-    conventional_to_emoji,
-    validate_conventional,
-)
+from .conventional import auto_fix_commit, get_last_commit_message, validate_conventional
 from .extra import generate_changelog, generate_squash_message
 from .git_utils import (
-    GitError,
-    amend_commit,
-    commit,
+    GitError as GitErr,
     detect_breaking_changes,
     detect_scope,
     get_branch_name,
-    get_last_commit_diff,
-    get_last_commit_message,
-    get_recent_commits,
     get_repo_name,
     get_staged_diff,
     get_staged_files,
@@ -38,565 +39,388 @@ from .git_utils import (
     is_git_repo,
     uninstall_hook,
 )
-from .render import (
-    confirm_commit,
-    console,
-    show_config_status,
-    show_diff_summary,
-    show_dry_run,
-    show_generating,
-    show_hook_installed,
-    show_hook_uninstalled,
-    show_message_preview,
-    show_reset_done,
-    show_stats,
-    show_success,
-    show_warning,
-)
+from .pr_generator import generate_pr_description
+from .render import console, show_diff_summary, show_generating, show_status
 
+
+# ── Main CLI ──────────────────────────────────────────
 
 @click.command()
-@click.option(
-    "-s", "--style",
-    type=click.Choice(["conventional", "emoji", "simple", "detailed"]),
-    help="Commit message style",
-)
-@click.option(
-    "-y", "--yes", "auto_yes",
-    is_flag=True,
-    help="Skip confirmation and commit immediately",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    help="Show generated message without committing",
-)
-@click.option(
-    "-m", "--message",
-    help="Additional context/hint for the AI",
-)
-@click.option(
-    "-e", "--edit",
-    is_flag=True,
-    help="Open generated message in $EDITOR before committing",
-)
-@click.option(
-    "--scope",
-    default=None,
-    help="Override auto-detected scope (e.g., 'auth', 'api')",
-)
-@click.option(
-    "--signoff", "--sign",
-    is_flag=True,
-    help="Add Signed-off-by trailer to commit",
-)
-@click.option(
-    "--no-verify", "-n",
-    is_flag=True,
-    help="Skip pre-commit and commit-msg hooks",
-)
-@click.option(
-    "--last",
-    is_flag=True,
-    help="Regenerate message for the most recent commit (requires --amend)",
-)
-@click.option(
-    "--amend",
-    is_flag=True,
-    help="Amend the last commit with the generated message",
-)
-@click.option(
-    "-t", "--template",
-    type=click.Path(exists=True),
-    default=None,
-    help="Custom prompt template file (Python format string)",
-)
-@click.option(
-    "--config",
-    "run_config",
-    is_flag=True,
-    help="Open configuration wizard",
-)
-@click.option(
-    "--reset-config",
-    is_flag=True,
-    help="Reset all configuration to defaults",
-)
-@click.option(
-    "--status",
-    is_flag=True,
-    help="Show current configuration",
-)
-@click.option(
-    "--hook",
-    "hook_file",
-    default=None,
-    help="Internal: used by git prepare-commit-msg hook",
-    hidden=True,
-)
-@click.option(
-    "--install-hook",
-    is_flag=True,
-    help="Install as git prepare-commit-msg hook",
-)
-@click.option(
-    "--uninstall-hook",
-    is_flag=True,
-    help="Remove aicommit git hook",
-)
-@click.option(
-    "--pr",
-    is_flag=True,
-    help="Generate a pull request description from branch diff",
-)
-@click.option(
-    "--pr-base",
-    default="main",
-    help="Base branch for PR diff (default: main)",
-)
-@click.option(
-    "--validate",
-    is_flag=True,
-    help="Validate generated message against Conventional Commits spec",
-)
-@click.option(
-    "--auto-fix",
-    is_flag=True,
-    help="Auto-fix conventional commit format if needed",
-)
-@click.option(
-    "--completion",
-    type=click.Choice(["bash", "zsh", "fish", "powershell"]),
-    default=None,
-    help="Generate shell completion script",
-)
-@click.option(
-    "--review",
-    is_flag=True,
-    help="Run AI code review on staged changes",
-)
-@click.option(
-    "--severity",
-    type=click.Choice(["all", "high", "medium", "low"]),
-    default="all",
-    help="Minimum severity for review (default: all)",
-)
-@click.option(
-    "--squash",
-    type=int,
-    default=None,
-    metavar="N",
-    help="Generate squash message from last N commits",
-)
-@click.option(
-    "--changelog",
-    is_flag=True,
-    help="Generate a changelog entry from recent commits",
-)
-@click.option(
-    "--version-tag",
-    default="",
-    help="Version tag for changelog (e.g., v1.2.0)",
-)
-@click.option(
-    "--copy",
-    is_flag=True,
-    help="Copy generated message to clipboard",
-)
-@click.option(
-    "--max-tokens",
-    type=int,
-    default=None,
-    help="Override max tokens for AI response",
-)
-@click.version_option(version="1.3.0", prog_name="aicommit")
-def main(style, auto_yes, dry_run, message, edit, scope, signoff, no_verify,
-         last, amend, template, run_config, reset_config_flag, status,
-         hook_file, install_hook_flag, uninstall_hook_flag,
-         pr, pr_base, validate, auto_fix, completion,
-         review, severity, squash, changelog, version_tag, copy, max_tokens):
+@click.version_option(__version__, "--version", "-V", message="aicommit v%(version)s")
+@click.option("--style", "-s", default=None,
+              type=click.Choice(["conventional", "emoji", "simple", "detailed"]),
+              help="Commit message style")
+@click.option("--message", "-m", "hint", default=None, help="Additional context for the AI")
+@click.option("--dry-run", "-d", is_flag=True, help="Preview message without committing")
+@click.option("--yes", "-y", "auto_yes", is_flag=True, help="Skip confirmation prompt")
+@click.option("--edit", "-e", is_flag=True, help="Open generated message in editor before committing")
+@click.option("--scope", default=None, help="Override detected scope")
+@click.option("--signoff", is_flag=True, help="Add Signed-off-by trailer")
+@click.option("--no-verify", is_flag=True, help="Bypass pre-commit and commit-msg hooks")
+@click.option("--last", is_flag=True, help="Generate message for last commit (useful with --amend)")
+@click.option("--amend", is_flag=True, help="Amend the last commit with generated message")
+@click.option("--template", "-t", "template_file", default=None, help="Custom prompt template file")
+@click.option("--stage", "-a", "auto_stage", is_flag=True, help="Auto-stage all modified files before commit")
+@click.option("--temperature", type=float, default=None, help="Override AI temperature (0.0-1.0)")
+@click.option("--max-tokens", type=int, default=None, help="Max tokens for AI response")
+@click.option("--config", "run_config", is_flag=True, help="Run interactive configuration wizard")
+@click.option("--reset-config", is_flag=True, help="Reset config to defaults")
+@click.option("--status", "show_status", is_flag=True, help="Show current configuration")
+@click.option("--install-hook", is_flag=True, help="Install aicommit as git prepare-commit-msg hook")
+@click.option("--uninstall-hook", is_flag=True, help="Remove aicommit git hook")
+@click.option("--review", is_flag=True, help="AI code review of staged changes")
+@click.option("--severity", default="all",
+              type=click.Choice(["all", "high", "medium", "low"]),
+              help="Filter review results by severity")
+@click.option("--pr", "generate_pr", is_flag=True, help="Generate pull request description")
+@click.option("--pr-base", default="main", help="Base branch for PR diff")
+@click.option("--squash", "squash_n", type=int, default=None, metavar="N",
+              help="Generate squash message from last N commits")
+@click.option("--changelog", is_flag=True, help="Generate changelog from commit history")
+@click.option("--version-tag", default=None, help="Version tag for changelog")
+@click.option("--validate", is_flag=True, help="Validate last commit follows conventional format")
+@click.option("--auto-fix", is_flag=True, help="Auto-fix last commit to follow conventional format")
+@click.option("--completion", "shell", default=None,
+              type=click.Choice(["bash", "zsh", "fish", "powershell"]),
+              help="Generate shell completion script")
+@click.option("--copy", is_flag=True, help="Copy generated message to clipboard")
+@click.option("--log", "show_log", is_flag=True, help="Show recent aicommit message history")
+@click.option("--hook", "hook_file", default=None, help=HIDDEN, hidden=True)
+def main(
+    style, hint, dry_run, auto_yes, edit, scope, signoff, no_verify,
+    last, amend, template_file, auto_stage, temperature, max_tokens,
+    run_config, reset_config_flag, show_status,
+    install_hook_flag, uninstall_hook_flag,
+    review, severity, generate_pr, pr_base,
+    squash_n, changelog, version_tag,
+    validate, auto_fix,
+    shell, copy, show_log, hook_file,
+):
     """AI-powered git commit message generator.
 
-    Run `aicommit` in any git repo with staged changes.
-    The AI will analyze your diff and generate a meaningful commit message.
-
-    \b
-    Examples:
-      aicommit                       # Generate and commit with confirmation
-      aicommit -y                    # Skip confirmation
-      aicommit -s emoji              # Use emoji style
-      aicommit --dry-run             # Preview without committing
-      aicommit -m "urgent fix"       # Provide context hint
-      aicommit -e                    # Edit message before committing
-      aicommit --scope auth          # Set scope manually
-      aicommit --signoff             # Add Signed-off-by
-      aicommit --last --amend        # Regenerate last commit message
-      aicommit --config              # Setup API key and preferences
-      aicommit --reset-config        # Reset to defaults
-      aicommit --install-hook        # Install as git hook
+    Stage your changes with `git add`, then run `aicommit` to generate the
+    perfect commit message.
     """
-    # ── Hook mode ──────────────────────────────────────────
+
+    # ── Meta commands (no git repo required) ──────────
+    if run_config:
+        setup_wizard()
+        return
+    if reset_config_flag:
+        reset_config()
+        console.print("[green]✓ Config reset to defaults[/green]")
+        return
+    if show_status:
+        show_status()
+        return
+    if shell:
+        _print_completion(shell)
+        return
+    if show_log:
+        _run_log()
+        return
     if hook_file:
         _run_hook_mode(hook_file)
         return
 
-    # ── Completion mode ────────────────────────────────────
-    if completion:
-        _print_completion(completion)
-        return
-
-    # ── PR mode ────────────────────────────────────────────
-    if pr:
-        _run_pr_mode(pr_base, message)
-        return
-
-    # ── Review mode ────────────────────────────────────────
-    if review:
-        _run_review_mode(severity, message)
-        return
-
-    # ── Squash mode ────────────────────────────────────────
-    if squash:
-        _run_squash_mode(squash, style, message)
-        return
-
-    # ── Changelog mode ─────────────────────────────────────
-    if changelog:
-        _run_changelog_mode(version_tag, message, style)
-        return
-
-    # ── Install/Uninstall hook ─────────────────────────────
+    # ── Sub-commands that need a git repo ────────────
     if install_hook_flag:
-        try:
-            path = install_hook()
-            show_hook_installed(path)
-        except GitError as e:
-            console.print(f"[red]✗ {e}[/red]")
-            sys.exit(1)
+        install_hook()
         return
-
     if uninstall_hook_flag:
-        try:
-            path = uninstall_hook()
-            show_hook_uninstalled(path)
-        except GitError as e:
-            console.print(f"[red]✗ {e}[/red]")
-            sys.exit(1)
+        uninstall_hook()
+        return
+    if generate_pr:
+        _run_pr_mode(pr_base, hint)
+        return
+    if squash_n:
+        _run_squash_mode(squash_n, style, hint)
+        return
+    if changelog:
+        _run_changelog_mode(version_tag, hint, style)
+        return
+    if review:
+        _run_review_mode(severity, hint)
+        return
+    if validate:
+        _run_validate()
+        return
+    if auto_fix:
+        _run_auto_fix()
         return
 
-    # ── Config/Reset modes ─────────────────────────────────
-    if reset_config_flag:
-        reset_config()
-        console.print("[green]✓ Configuration reset to defaults.[/green]")
-        return
-
-    if run_config:
-        config = setup_wizard()
-        show_config_status(config)
-        return
-
-    if status:
-        config = load_config()
-        show_config_status(config)
-        return
-
-    # ── Validate environment ───────────────────────────────
-    if not is_git_repo():
-        console.print("[red]✗ Not a git repository. Run this inside a git repo.[/red]")
-        sys.exit(1)
-
-    is_amend_mode = amend or last
-
-    if is_amend_mode:
-        # Amend/Last mode — uses the most recent commit's diff
-        if last and not amend:
-            console.print("[yellow]ℹ --last requires --amend. Enabling amend mode.[/yellow]")
-        if not has_staged_changes():
-            show_warning("No staged changes. Using last commit's changes for regeneration.")
-    else:
-        if not has_staged_changes():
-            console.print("[yellow]ℹ No staged changes. Use `git add` first.[/yellow]")
-            console.print("[dim]Tip: use `aicommit --last --amend` to rewrite the last commit message.[/dim]")
-            sys.exit(0)
-
-    # ── Load config ────────────────────────────────────────
-    config = load_config()
-    if not config["api"]["key"]:
-        console.print("[yellow]⚠ First time? Let's set up your AI provider.[/yellow]")
-        config = setup_wizard()
-        if not config["api"]["key"]:
-            console.print("[red]✗ API key required. Run `aicommit --config` to set up.[/red]")
-            sys.exit(1)
-
-    # ── Load custom template ───────────────────────────────
-    custom_template = None
-    if template:
-        try:
-            custom_template = Path(template).read_text(encoding="utf-8")
-            console.print(f"[dim]Using custom template: {template}[/dim]")
-        except Exception as e:
-            console.print(f"[red]✗ Failed to read template file: {e}[/red]")
-            sys.exit(1)
-
-    # ── Gather git context ─────────────────────────────────
-    try:
-        repo = get_repo_name()
-        branch = get_branch_name()
-        recent = get_recent_commits(5)
-
-        if is_amend_mode:
-            files = []
-            diff = get_last_commit_diff(max_lines=config["commit"]["max_diff_lines"])
-            stats = ""
-            old_message = get_last_commit_message()
-            console.print(f"[dim]Amending: {old_message.split(chr(10))[0]}[/dim]")
-            scope = scope or None
-            branch_type = infer_type_from_branch(branch)
-            breaking = detect_breaking_changes(diff)
-        else:
-            files = get_staged_files()
-            diff = get_staged_diff(
-                max_lines=config["commit"]["max_diff_lines"],
-                skip_noise=True,
-            )
-            stats = get_staged_stats()
-            scope = scope or detect_scope(files)
-            branch_type = infer_type_from_branch(branch)
-            breaking = detect_breaking_changes(diff)
-            file_list = "\n".join(f"  - {f}" for f in files[:30])
-            if len(files) > 30:
-                file_list += f"\n  ... and {len(files) - 30} more files"
-
-        # Build hints for AI
-        branch_hint = ""
-        if branch_type:
-            branch_hint = (
-                f"Branch name '{branch}' suggests this is a '{branch_type}' type change."
-            )
-            if scope:
-                branch_hint += f" Use scope: {scope}."
-
-        breaking_hint = ""
-        if breaking:
-            breaking_hint = (
-                "⚠ This diff contains breaking changes! "
-                "Use '!' after type/scope (e.g., feat(api)!: ...) "
-                "and add BREAKING CHANGE: footer if using conventional style."
-            )
-
-        file_list_str = ""
-        if not is_amend_mode:
-            file_list_str = file_list
-
-        # Show summary
-        show_diff_summary(
-            files if not is_amend_mode else [],
-            stats,
-            scope=scope or "",
-            branch_type=branch_type or "",
-            breaking=breaking,
-        )
-        console.print(
-            f"[dim]Repo: {repo} | Branch: {branch}"
-            f"{' | Mode: amend' if is_amend_mode else ''}[/dim]"
-        )
-
-        # Determine style
-        commit_style = style or config["commit"]["style"]
-        language = config["commit"]["language"]
-
-        # ── Generate message ────────────────────────────────
-        with show_generating() as progress:
-            task = progress.add_task("", total=None)
-            result = generate_commit_message(
-                diff=diff,
-                style=commit_style,
-                language=language,
-                recent_commits=recent,
-                hint=message,
-                branch_hint=branch_hint,
-                breaking_hint=breaking_hint,
-                file_list=file_list_str,
-                template=custom_template,
-                max_tokens_override=max_tokens,
-            )
-            progress.remove_task(task)
-
-        # ── Show result ─────────────────────────────────────
-        commit_msg = result.message
-
-        # ── Conventional validation ─────────────────────────
-        if commit_style == "conventional":
-            is_valid, err = validate_conventional(commit_msg)
-            if validate and not is_valid:
-                console.print(f"[yellow]⚠ Validation: {err}[/yellow]")
-            if auto_fix and not is_valid:
-                fixed = auto_fix_conventional(commit_msg)
-                if fixed != commit_msg:
-                    console.print(f"[yellow]🔧 Auto-fixed to conventional format[/yellow]")
-                    show_message_preview(fixed, commit_style, scope=scope or "")
-                    if not auto_yes and not config["commit"]["auto_confirm"]:
-                        if Confirm.ask("[bold]Use fixed message?[/bold]", default=True):
-                            commit_msg = fixed
-                    else:
-                        commit_msg = fixed
-
-        show_message_preview(commit_msg, commit_style, scope=scope or "")
-        show_stats(result.tokens_in, result.tokens_out, result.time_ms, result.model)
-
-        # ── Copy to clipboard ─────────────────────────────────
-        if copy:
-            _copy_to_clipboard(commit_msg)
-
-        # ── Edit mode ───────────────────────────────────────
-        if edit:
-            edited = click.edit(commit_msg)
-            if edited is not None:
-                commit_msg = edited.strip()
-                if not commit_msg:
-                    console.print("[yellow]Message was empty, commit cancelled.[/yellow]")
-                    return
-
-        # ── Dry run ─────────────────────────────────────────
-        if dry_run:
-            show_dry_run(commit_msg)
-            return
-
-        # ── Confirm and execute ─────────────────────────────
-        do_signoff = signoff or config["commit"].get("signoff", False)
-        do_no_verify = no_verify or config["commit"].get("no_verify", False)
-
-        if auto_yes or config["commit"]["auto_confirm"] or confirm_commit(commit_msg):
-            if is_amend_mode:
-                amend_commit(commit_msg, signoff=do_signoff, no_verify=do_no_verify)
-                console.print(f"\n[green bold]✓ Amended![/green bold] [dim]{commit_msg.split(chr(10))[0]}[/dim]\n")
-            else:
-                commit(commit_msg, signoff=do_signoff, no_verify=do_no_verify)
-                show_success(commit_msg)
-        else:
-            console.print("\n[yellow]Commit cancelled.[/yellow]")
-
-    except GitError as e:
-        console.print(f"[red]✗ Git error: {e}[/red]")
-        sys.exit(1)
-    except AIError as e:
-        console.print(f"[red]✗ AI error: {e}[/red]")
-        sys.exit(1)
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Cancelled by user.[/yellow]")
-        sys.exit(0)
-
-
-def _print_completion(shell: str):
-    """Print shell completion script to stdout."""
-    # Build completion script using Click's auto-completion infrastructure
-    # User should run: eval "$(aicommit --completion bash)"
-    prog = "aicommit"
-
-    if shell == "bash":
-        print(f'''# aicommit bash completion
-_aicommit_completion() {{
-    local IFS=$'\\n'
-    COMPREPLY=()
-    local cur="${{COMP_WORDS[COMP_CWORD]}}"
-    if [[ $cur == -* ]]; then
-        COMPREPLY=( $(compgen -W "-s --style -y --yes --dry-run -m --message -e --edit --scope \\
-            --signoff --sign --no-verify -n --last --amend -t --template \\
-            --config --reset-config --status --install-hook --uninstall-hook \\
-            --pr --pr-base --validate --auto-fix --completion --help --version" -- "$cur") )
-    fi
-    return 0
-}}
-complete -F _aicommit_completion {prog}''')
-    elif shell == "zsh":
-        print(f'''#compdef {prog}
-_aicommit() {{
-    local -a opts
-    opts=(
-        '-s[Commit message style]:style:(conventional emoji simple detailed)'
-        '-y[Skip confirmation]'
-        '--dry-run[Preview without committing]'
-        '-m[Additional context hint]:hint:'
-        '-e[Edit before committing]'
-        '--scope[Override scope]:scope:'
-        '--signoff[Add Signed-off-by]'
-        '--no-verify[Skip pre-commit hooks]'
-        '--last[Regenerate last commit message]'
-        '--amend[Amend last commit]'
-        '-t[Custom template file]:file:_files'
-        '--config[Open config wizard]'
-        '--reset-config[Reset to defaults]'
-        '--status[Show current config]'
-        '--install-hook[Install git hook]'
-        '--uninstall-hook[Remove git hook]'
-        '--pr[Generate PR description]'
-        '--pr-base[Base branch for PR]:branch:'
-        '--validate[Validate conventional format]'
-        '--auto-fix[Auto-fix conventional format]'
-        '--completion[Shell completion]:shell:(bash zsh fish powershell)'
-        '--help[Show help]'
-        '--version[Show version]'
-    )
-    _describe 'command' opts
-}}
-compdef _aicommit {prog}''')
-    elif shell == "fish":
-        print(f'''# aicommit fish completion
-complete -c {prog} -s s -l style -x -a "conventional emoji simple detailed" -d "Commit message style"
-complete -c {prog} -s y -l yes -d "Skip confirmation and commit immediately"
-complete -c {prog} -l dry-run -d "Show generated message without committing"
-complete -c {prog} -s m -l message -x -d "Additional context/hint for the AI"
-complete -c {prog} -s e -l edit -d "Open generated message in EDITOR before committing"
-complete -c {prog} -l scope -x -d "Override auto-detected scope"
-complete -c {prog} -l signoff -l sign -d "Add Signed-off-by trailer to commit"
-complete -c {prog} -s n -l no-verify -d "Skip pre-commit and commit-msg hooks"
-complete -c {prog} -l last -d "Regenerate message for the most recent commit"
-complete -c {prog} -l amend -d "Amend the last commit"
-complete -c {prog} -s t -l template -r -d "Custom prompt template file"
-complete -c {prog} -l config -d "Open configuration wizard"
-complete -c {prog} -l reset-config -d "Reset all configuration to defaults"
-complete -c {prog} -l status -d "Show current configuration"
-complete -c {prog} -l install-hook -d "Install as git prepare-commit-msg hook"
-complete -c {prog} -l uninstall-hook -d "Remove aicommit git hook"
-complete -c {prog} -l pr -d "Generate a pull request description"
-complete -c {prog} -l pr-base -x -d "Base branch for PR diff"
-complete -c {prog} -l validate -d "Validate generated message against Conventional Commits"
-complete -c {prog} -l auto-fix -d "Auto-fix conventional commit format"
-complete -c {prog} -l completion -x -a "bash zsh fish powershell" -d "Generate shell completion script"
-complete -c {prog} -l help -d "Show help"
-complete -c {prog} -l version -d "Show version"''')
-    elif shell == "powershell":
-        print(f'''# aicommit PowerShell completion
-Register-ArgumentCompleter -Native -CommandName {prog} -ScriptBlock {{
-    param($wordToComplete, $commandAst, $cursorPosition)
-    $opts = @(
-        '-s', '-y', '--dry-run', '-m', '-e', '--scope', '--signoff', '--sign',
-        '--no-verify', '-n', '--last', '--amend', '-t', '--template',
-        '--config', '--reset-config', '--status',
-        '--install-hook', '--uninstall-hook', '--pr', '--pr-base',
-        '--validate', '--auto-fix', '--completion', '--help', '--version'
-    )
-    $opts | Where-Object {{ $_ -like "$wordToComplete*" }}
-}}''')
-    else:
-        console.print(f"[red]Unknown shell: {shell}[/red]")
-        sys.exit(1)
-
-
-def _run_pr_mode(base_branch: str, hint: str):
-    """Generate a PR description."""
-    from .pr_generator import generate_pr_description
-    from .ai import AIError as AIErr
-    from .git_utils import GitError as GitErr
+    # ── Commit generation ───────────────────────────
 
     if not is_git_repo():
         console.print("[red]✗ Not a git repository.[/red]")
         sys.exit(1)
 
+    # Auto-stage
+    if auto_stage:
+        _auto_stage_changes()
+
+    if amend and not last:
+        console.print("[yellow]ℹ --amend is usually used with --last (last commit amend).[/yellow]")
+
+    config = load_config()
+
+    # First-run setup
+    if not config["api"]["key"]:
+        console.print("[yellow]⚠ First time? Let's set up your AI provider.[/yellow]")
+        config = setup_wizard()
+        if not config["api"]["key"]:
+            console.print("[red]✗ API key required to use aicommit.[/red]")
+            sys.exit(1)
+        # Reload after setup
+        config = load_config()
+
+    commit_style = style or config["commit"]["style"]
+    language = config["commit"]["language"]
+
+    # Handle --last (generate message for existing commit)
+    if last:
+        _run_last_mode(commit_style, language, hint, amend, signoff, no_verify, copy)
+        return
+
+    # Normal commit flow
+    if not has_staged_changes():
+        console.print("[yellow]ℹ No staged changes. Run `git add <files>` first, or use `-a` to auto-stage.[/yellow]")
+        sys.exit(0)
+
+    # Template
+    custom_template = None
+    if template_file:
+        try:
+            custom_template = Path(template_file).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            console.print(f"[red]✗ Template file not found: {template_file}[/red]")
+            sys.exit(1)
+
+    try:
+        # Gather context
+        diff = get_staged_diff(
+            max_lines=config["commit"]["max_diff_lines"],
+            skip_noise=True,
+        )
+        files = get_staged_files()
+        stats = get_staged_stats()
+        branch = get_branch_name()
+        repo = get_repo_name()
+        detected_scope = scope or detect_scope(files)
+        branch_type = infer_type_from_branch(branch)
+        breaking = detect_breaking_changes(diff)
+
+        show_diff_summary(files, stats, scope=detected_scope, branch_type=branch_type, breaking=breaking)
+
+        temp_override = temperature if temperature is not None else config["api"].get("temperature", 0.3)
+
+        with show_generating() as progress:
+            task = progress.add_task("", total=None)
+            try:
+                result = generate_commit_message(
+                    diff=diff,
+                    style=commit_style,
+                    language=language,
+                    hint=hint,
+                    branch_hint=f"Branch: {branch}, type: {branch_type}" if branch_type else "",
+                    breaking_hint="BREAKING CHANGE DETECTED" if breaking else "",
+                    file_list=files,
+                    template=custom_template,
+                    max_tokens_override=max_tokens,
+                    temperature_override=temp_override,
+                )
+            except (GitErr, AIErr) as e:
+                progress.remove_task(task)
+                console.print(f"[red]✗ {e}[/red]")
+                sys.exit(1)
+            progress.remove_task(task)
+
+        console.print()
+        console.print(
+            Panel(
+                result.message,
+                title=f"[bold]{'📐' if commit_style == 'conventional' else '🎨' if commit_style == 'emoji' else '📝'} Generated Message ({commit_style.title()})[/bold]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+        console.print(
+            f"[dim]Model: {result.model} | "
+            f"Tokens: {result.tokens_in}→{result.tokens_out} | "
+            f"Time: {result.time_ms:.0f}ms | "
+            f"Temp: {temp_override}[/dim]"
+        )
+
+        # Copy to clipboard
+        if copy:
+            _copy_to_clipboard(result.message)
+
+        # Dry run
+        if dry_run:
+            console.print("\n[dim]Dry run — not committing.[/dim]")
+            return
+
+        # Confirmation
+        if not auto_yes:
+            console.print()
+            ok = Confirm.ask("[bold]Commit with this message?[/bold]", default=True)
+            if not ok:
+                console.print("[dim]Aborted.[/dim]")
+                return
+
+        # Edit
+        final_msg = result.message
+        if edit:
+            final_msg = _edit_message(final_msg)
+
+        # Commit
+        commit_args = ["commit", "-m", final_msg]
+        if signoff or config["commit"].get("signoff"):
+            commit_args.append("--signoff")
+        if no_verify or config["commit"].get("no_verify"):
+            commit_args.append("--no-verify")
+
+        try:
+            out = sp.run(
+                ["git"] + commit_args,
+                capture_output=True, text=True,
+                creationflags=0x08000000,
+            )
+            if out.returncode != 0:
+                console.print(f"[red]✗ git commit failed:[/red]\n{out.stderr}")
+                sys.exit(1)
+            console.print(f"[green]{out.stdout.strip()}[/green]")
+
+            # Save history
+            save_history({
+                "repo": repo,
+                "branch": branch,
+                "style": commit_style,
+                "message": final_msg,
+                "model": result.model,
+                "tokens_in": result.tokens_in,
+                "tokens_out": result.tokens_out,
+                "time_ms": result.time_ms,
+            })
+        except Exception as e:
+            console.print(f"[red]✗ {e}[/red]")
+            sys.exit(1)
+
+    except GitErr as e:
+        console.print(f"[red]✗ Git error: {e}[/red]")
+        sys.exit(1)
+
+
+# ── Sub-command helpers ──────────────────────────────
+
+def _auto_stage_changes():
+    """Run `git add -A` to stage all changes."""
+    try:
+        sp.run(
+            ["git", "add", "-A"],
+            capture_output=True, text=True,
+            creationflags=0x08000000,
+        )
+        console.print("[dim]📎 Auto-staged all changes[/dim]")
+    except Exception as e:
+        console.print(f"[red]✗ Auto-stage failed: {e}[/red]")
+        sys.exit(1)
+
+
+def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: bool, no_verify: bool, copy: bool):
+    """Generate message for last commit (amend)."""
+    config = load_config()
+    if not config["api"]["key"]:
+        console.print("[red]✗ No API key configured.[/red]")
+        sys.exit(1)
+
+    try:
+        diff = sp.run(
+            ["git", "diff", "HEAD~1", "--unified=3"],
+            capture_output=True, text=True,
+            creationflags=0x08000000,
+        )
+        if diff.returncode != 0:
+            console.print("[red]✗ Could not get last commit diff (need at least 2 commits).[/red]")
+            sys.exit(1)
+
+        diff_text = diff.stdout
+        diff_lines = diff_text.split("\n")
+        if len(diff_lines) > 300:
+            diff_text = "\n".join(diff_lines[:300]) + f"\n... ({len(diff_lines)-300} more lines)"
+
+        branch = get_branch_name()
+        branch_type = infer_type_from_branch(branch)
+
+        with show_generating() as progress:
+            task = progress.add_task("", total=None)
+            try:
+                result = generate_commit_message(
+                    diff=diff_text, style=style, language=language,
+                    hint=hint or f"Rewrite commit message for these changes",
+                    branch_hint=f"Branch: {branch}, type: {branch_type}" if branch_type else "",
+                    max_tokens_override=getattr(hint, '__len__', lambda:0)() or 500,
+                )
+            except (GitErr, AIErr) as e:
+                progress.remove_task(task)
+                console.print(f"[red]✗ {e}[/red]")
+                sys.exit(1)
+            progress.remove_task(task)
+
+        console.print()
+        console.print(
+            Panel(
+                result.message,
+                title="[bold]📝 Amended Message[/bold]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+
+        if copy:
+            _copy_to_clipboard(result.message)
+
+        if amend:
+            amend_args = ["commit", "--amend", "-m", result.message]
+            if signoff:
+                amend_args.append("--signoff")
+            if no_verify:
+                amend_args.append("--no-verify")
+            out = sp.run(
+                ["git"] + amend_args,
+                capture_output=True, text=True,
+                creationflags=0x08000000,
+            )
+            if out.returncode != 0:
+                console.print(f"[red]✗ git commit --amend failed:[/red]\n{out.stderr}")
+                sys.exit(1)
+            console.print(f"[green]{out.stdout.strip()}[/green]")
+
+    except Exception as e:
+        console.print(f"[red]✗ {e}[/red]")
+        sys.exit(1)
+
+
+def _run_pr_mode(base_branch: str, hint: str):
+    """Generate a pull request description."""
+    if not is_git_repo():
+        console.print("[red]✗ Not a git repository.[/red]")
+        sys.exit(1)
+
+    config = load_config()
+    if not config["api"]["key"]:
+        console.print("[yellow]⚠ First time? Let's set up your AI provider.[/yellow]")
+        config = setup_wizard()
+        if not config["api"]["key"]:
+            console.print("[red]✗ API key required.[/red]")
+            sys.exit(1)
+
+    language = config["commit"]["language"]
+
     with show_generating() as progress:
         task = progress.add_task("", total=None)
         try:
-            description = generate_pr_description(base_branch, hint=hint)
+            msg = generate_pr_description(base_branch, language, hint)
         except (GitErr, AIErr) as e:
             progress.remove_task(task)
             console.print(f"[red]✗ {e}[/red]")
@@ -606,74 +430,16 @@ def _run_pr_mode(base_branch: str, hint: str):
     console.print()
     console.print(
         Panel(
-            description,
-            title="[bold]📋 Pull Request Description[/bold]",
-            border_style="cyan",
+            msg,
+            title="[bold]📋 PR Description[/bold]",
+            border_style="magenta",
             padding=(1, 2),
         )
     )
-    console.print("\n[dim]Copy the description above to your PR.[/dim]")
-
-
-def _run_hook_mode(commit_msg_file: str):
-    """Run in git hook mode — write AI message to commit msg file."""
-    try:
-        if not has_staged_changes():
-            return
-
-        config = load_config()
-        if not config["api"]["key"]:
-            return
-
-        files = get_staged_files()
-        diff = get_staged_diff(
-            max_lines=config["commit"]["max_diff_lines"],
-            skip_noise=True,
-        )
-        recent = get_recent_commits(3)
-        branch = get_branch_name()
-        scope = detect_scope(files)
-        branch_type = infer_type_from_branch(branch)
-        breaking = detect_breaking_changes(diff)
-
-        branch_hint = ""
-        if branch_type:
-            branch_hint = f"Branch '{branch}' suggests '{branch_type}' type."
-
-        breaking_hint = ""
-        if breaking:
-            breaking_hint = "⚠ Contains breaking changes."
-
-        file_list = "\n".join(f"  - {f}" for f in files[:20])
-
-        result = generate_commit_message(
-            diff=diff,
-            style=config["commit"]["style"],
-            language=config["commit"]["language"],
-            recent_commits=recent,
-            branch_hint=branch_hint,
-            breaking_hint=breaking_hint,
-            file_list=file_list,
-        )
-
-        msg_path = Path(commit_msg_file)
-        current = msg_path.read_text(encoding="utf-8") if msg_path.exists() else ""
-
-        if current.strip():
-            return  # Don't overwrite existing message
-
-        msg_path.write_text(result.message + "\n", encoding="utf-8")
-
-    except Exception:
-        # Hook should never block a commit
-        pass
 
 
 def _run_squash_mode(num_commits: int, style: str, hint: str):
     """Generate a squash commit message."""
-    from .ai import AIError as AIErr
-    from .git_utils import GitError as GitErr
-
     if not is_git_repo():
         console.print("[red]✗ Not a git repository.[/red]")
         sys.exit(1)
@@ -705,8 +471,6 @@ def _run_squash_mode(num_commits: int, style: str, hint: str):
 
 def _run_changelog_mode(version: str, hint: str, style: str):
     """Generate a changelog entry."""
-    from .ai import AIError as AIErr
-
     if not is_git_repo():
         console.print("[red]✗ Not a git repository.[/red]")
         sys.exit(1)
@@ -738,8 +502,6 @@ def _run_changelog_mode(version: str, hint: str, style: str):
 def _run_review_mode(severity: str, hint: str):
     """Run AI code review on staged changes."""
     from .review import analyze_diff
-    from .ai import AIError as AIErr
-    from .git_utils import GitError as GitErr
 
     if not is_git_repo():
         console.print("[red]✗ Not a git repository.[/red]")
@@ -759,10 +521,7 @@ def _run_review_mode(severity: str, hint: str):
 
     try:
         files = get_staged_files()
-        diff = get_staged_diff(
-            max_lines=config["commit"]["max_diff_lines"],
-            skip_noise=True,
-        )
+        diff = get_staged_diff(max_lines=config["commit"]["max_diff_lines"], skip_noise=True)
         stats = get_staged_stats()
 
         show_diff_summary(files, stats, scope="review", branch_type="", breaking=False)
@@ -789,10 +548,110 @@ def _run_review_mode(severity: str, hint: str):
         sys.exit(1)
 
 
+def _run_validate():
+    """Validate last commit follows conventional format."""
+    if not is_git_repo():
+        console.print("[red]✗ Not a git repository.[/red]")
+        sys.exit(1)
+    msg = get_last_commit_message()
+    if not msg:
+        console.print("[red]✗ No commits found.[/red]")
+        sys.exit(1)
+    valid, error = validate_conventional(msg)
+    if valid:
+        console.print(f"[green]✓ Conventional commit format is valid.[/green]")
+    else:
+        console.print(f"[red]✗ {error}[/red]")
+        console.print(f"[dim]Run `aicommit --auto-fix` to fix it automatically.[/dim]")
+
+
+def _run_auto_fix():
+    """Auto-fix last commit message to follow conventional format."""
+    if not is_git_repo():
+        console.print("[red]✗ Not a git repository.[/red]")
+        sys.exit(1)
+    msg = get_last_commit_message()
+    if not msg:
+        console.print("[red]✗ No commits found.[/red]")
+        sys.exit(1)
+    try:
+        fixed = auto_fix_commit(msg)
+        console.print(f"[green]✓ Fixed message:[/green]")
+        console.print(f"  [dim]Old:[/dim] {msg}")
+        console.print(f"  [dim]New:[/dim] {fixed}")
+        sp.run(
+            ["git", "commit", "--amend", "-m", fixed],
+            capture_output=True, text=True,
+            creationflags=0x08000000,
+        )
+        console.print("[green]✓ Last commit message updated.[/green]")
+    except ValueError as e:
+        console.print(f"[red]✗ {e}[/red]")
+        sys.exit(1)
+
+
+def _run_log():
+    """Show recent aicommit message history."""
+    entries = load_history(50)
+    if not entries:
+        console.print("[dim]No history yet. Generate some commits first![/dim]")
+        return
+
+    console.print()
+    console.print(f"[bold]📜 aicommit History[/bold] ([dim]{len(entries)} entries[/dim])")
+    console.print("─" * 60)
+
+    for entry in reversed(entries[-30:]):
+        when = entry.get("timestamp", "")[:19].replace("T", " ")
+        repo = entry.get("repo", "?")
+        branch = entry.get("branch", "?")
+        style = entry.get("style", "?")
+        msg = entry.get("message", "?").split("\n")[0][:80]
+        model = entry.get("model", "?")
+        tok = f"→{entry.get('tokens_out', 0)}"
+        console.print(
+            f"[dim]{when}[/dim]  [cyan]{repo}[/cyan]/{branch}  "
+            f"[green]{msg}[/green]  "
+            f"[dim]{style} | {model} | {tok} tok[/dim]"
+        )
+
+    console.print("─" * 60)
+    console.print(f"[dim]History file: ~/.aicommit/history.jsonl[/dim]")
+
+
+def _edit_message(message: str) -> str:
+    """Open message in $EDITOR for user editing."""
+    editor = os.environ.get("EDITOR", os.environ.get("VISUAL", "notepad" if platform.system() == "Windows" else "vim"))
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".txt", prefix="aicommit_", text=True)
+    try:
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(message)
+            f.write("\n\n# Edit the commit message above.")
+            f.write("\n# Lines starting with # will be ignored.\n")
+
+        sp.run([editor, tmp_path], check=False)
+
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            edited = f.read()
+
+        # Strip comment lines
+        lines = [
+            line for line in edited.split("\n")
+            if not line.strip().startswith("#")
+        ]
+        result = "\n".join(lines).strip()
+        return result if result else message
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def _copy_to_clipboard(text: str):
-    """Copy text to clipboard using native platform tools."""
+    """Copy text to clipboard."""
     import shutil
-    import subprocess as sp
 
     try:
         import pyperclip
@@ -812,11 +671,67 @@ def _copy_to_clipboard(text: str):
         elif shutil.which("xsel"):
             sp.run(["xsel", "--clipboard", "--input"], input=text, text=True)
         else:
-            console.print("[dim]ℹ Install `pyperclip` for automatic clipboard support[/dim]")
             return
         console.print("[dim]📋 Copied to clipboard[/dim]")
     except Exception:
-        console.print("[dim]ℹ Could not copy to clipboard[/dim]")
+        pass
+
+
+def _print_completion(shell: str):
+    """Print shell completion script to stdout."""
+    if shell == "bash":
+        print('eval "$(_AICOMMIT_COMPLETE=bash_source aicommit)"')
+    elif shell == "zsh":
+        print('eval "$(_AICOMMIT_COMPLETE=zsh_source aicommit)"')
+    elif shell == "fish":
+        print("aicommit --completion fish | source")
+    elif shell == "powershell":
+        print("Register-ArgumentCompleter -Native -CommandName aicommit -ScriptBlock {")
+        print("    param($wordToComplete, $commandAst, $cursorPosition)")
+        print("    $env:_AICOMMIT_COMPLETE = 'powershell_complete'")
+        print("    aicommit | ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }")
+        print("}")
+
+def _run_hook_mode(commit_msg_file: str):
+    """Hook mode: generate message and write it to the commit message file.
+    
+    Called by the prepare-commit-msg git hook. Writes the AI-generated
+    message into the given file so git uses it as the pre-filled message.
+    """
+    if not has_staged_changes():
+        return  # Nothing to analyze
+
+    config = load_config()
+    if not config["api"]["key"]:
+        return  # Not configured
+
+    try:
+        diff = get_staged_diff(max_lines=config["commit"]["max_diff_lines"], skip_noise=True)
+        if not diff.strip():
+            return
+
+        result = generate_commit_message(
+            diff=diff,
+            style=config["commit"]["style"],
+            language=config["commit"]["language"],
+        )
+
+        # Write the message to the commit file
+        with open(commit_msg_file, "w", encoding="utf-8") as f:
+            f.write(result.message)
+
+        save_history({
+            "repo": get_repo_name(),
+            "branch": get_branch_name(),
+            "style": config["commit"]["style"],
+            "message": result.message,
+            "model": result.model,
+            "tokens_in": result.tokens_in,
+            "tokens_out": result.tokens_out,
+            "time_ms": result.time_ms,
+        })
+    except Exception:
+        pass  # Hook should never block the commit
 
 
 if __name__ == "__main__":
