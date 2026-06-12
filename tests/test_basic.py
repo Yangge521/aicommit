@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.4.0"
+        assert aicommit.__version__ == "1.5.0"
 
 
 class TestConfig:
@@ -319,3 +319,41 @@ class TestWrapBody:
         from aicommit.conventional import wrap_body
         result = wrap_body("feat: add login")
         assert result == "feat: add login"
+
+
+class TestConfigSetGet:
+    def test_get_config_value_defaults(self):
+        from aicommit.config import DEFAULT_CONFIG, get_config_value
+        # get_config_value reads from file; DEFAULT_CONFIG is the fallback
+        assert DEFAULT_CONFIG["commit"]["style"] == "conventional"
+        assert DEFAULT_CONFIG["api"]["model"] == "deepseek-chat"
+
+    def test_set_config_value_roundtrip(self):
+        from aicommit.config import set_config_value, get_config_value
+        original = get_config_value("api.temperature")
+        try:
+            set_config_value("api.temperature", "0.7")
+            assert get_config_value("api.temperature") == "0.7"
+        finally:
+            set_config_value("api.temperature", original)
+
+
+class TestAicommitignore:
+    def test_ignore_import(self):
+        from aicommit.git_utils import load_aicommitignore, match_aicommitignore
+        assert callable(load_aicommitignore)
+        assert callable(match_aicommitignore)
+
+    def test_match_ignore_patterns(self):
+        from aicommit.git_utils import match_aicommitignore
+        patterns = ["*.log", "dist/*", "secrets.env"]
+        assert match_aicommitignore("debug.log", patterns) is True
+        assert match_aicommitignore("dist/main.js", patterns) is True
+        assert match_aicommitignore("secrets.env", patterns) is True
+        assert match_aicommitignore("src/main.py", patterns) is False
+        assert match_aicommitignore("README.md", patterns) is False
+
+    def test_match_by_filename_only(self):
+        from aicommit.git_utils import match_aicommitignore
+        patterns = ["*.log"]
+        assert match_aicommitignore("some/deep/path/error.log", patterns) is True

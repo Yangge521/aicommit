@@ -1,5 +1,6 @@
 """Git operations for aicommit."""
 
+import fnmatch
 import platform
 import subprocess
 from collections import Counter
@@ -59,6 +60,39 @@ def is_noise_file(filepath: str) -> bool:
     return False
 
 
+def load_aicommitignore() -> list[str]:
+    """Load patterns from .aicommitignore file.
+
+    Searches from current directory up to git root.
+    Each line is a glob pattern (like .gitignore).
+    Lines starting with # are comments.
+    """
+    patterns = []
+    try:
+        git_root = run_git(["rev-parse", "--show-toplevel"])
+    except GitError:
+        return patterns
+
+    ignore_file = Path(git_root) / ".aicommitignore"
+    if not ignore_file.is_file():
+        return patterns
+
+    with open(ignore_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                patterns.append(line)
+    return patterns
+
+
+def match_aicommitignore(filepath: str, patterns: list[str]) -> bool:
+    """Check if a filepath matches any .aicommitignore pattern."""
+    for pat in patterns:
+        if fnmatch.fnmatch(filepath, pat) or fnmatch.fnmatch(Path(filepath).name, pat):
+            return True
+    return False
+
+
 def get_staged_diff(max_lines: int = 200, skip_noise: bool = True) -> str:
     """Get the git diff of staged changes, with smart filtering and truncation.
 
@@ -69,7 +103,11 @@ def get_staged_diff(max_lines: int = 200, skip_noise: bool = True) -> str:
     all_files = get_staged_files()
 
     if skip_noise:
-        meaningful = [f for f in all_files if not is_noise_file(f)]
+        patterns = load_aicommitignore()
+        meaningful = [
+            f for f in all_files
+            if not is_noise_file(f) and not match_aicommitignore(f, patterns)
+        ]
     else:
         meaningful = list(all_files)
 

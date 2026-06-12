@@ -1,5 +1,6 @@
 """Configuration management for aicommit."""
 
+import copy
 import datetime
 import json
 import os
@@ -58,13 +59,13 @@ def load_config() -> dict:
         try:
             with open(CONFIG_FILE, "rb") as f:
                 loaded = tomllib.load(f)
-            config = DEFAULT_CONFIG.copy()
+            config = copy.deepcopy(DEFAULT_CONFIG)
             _deep_merge(config, loaded)
         except Exception:
             console.print("[yellow]⚠ Config file corrupted, using defaults[/yellow]")
-            config = DEFAULT_CONFIG.copy()
+            config = copy.deepcopy(DEFAULT_CONFIG)
     else:
-        config = DEFAULT_CONFIG.copy()
+        config = copy.deepcopy(DEFAULT_CONFIG)
 
     # Override with environment variables
     env_map = {
@@ -239,3 +240,44 @@ def _deep_merge(base: dict, override: dict) -> None:
             _deep_merge(base[key], value)
         else:
             base[key] = value
+
+
+def set_config_value(key_path: str, value: str):
+    """Set a single config value by dotted path (e.g., 'api.model' or 'commit.style')."""
+    config = load_config()
+    parts = key_path.split(".")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid key path '{key_path}'. Use format: section.key")
+
+    section, key = parts
+    if section not in config:
+        raise ValueError(f"Unknown section '{section}'. Valid sections: {', '.join(config.keys())}")
+    if key not in config[section]:
+        raise ValueError(f"Unknown key '{key}' in section '{section}'")
+
+    # Coerce value type
+    old_val = config[section][key]
+    if isinstance(old_val, bool):
+        config[section][key] = value.lower() in ("true", "1", "yes", "on")
+    elif isinstance(old_val, int):
+        config[section][key] = int(value)
+    elif isinstance(old_val, float):
+        config[section][key] = float(value)
+    else:
+        config[section][key] = value
+
+    save_config(config)
+
+
+def get_config_value(key_path: str) -> str:
+    """Get a single config value by dotted path."""
+    config = load_config()
+    parts = key_path.split(".")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid key path '{key_path}'. Use format: section.key")
+    section, key = parts
+    if section not in config:
+        raise ValueError(f"Unknown section '{section}'")
+    if key not in config[section]:
+        raise ValueError(f"Unknown key '{key}' in section '{section}'")
+    return str(config[section][key])

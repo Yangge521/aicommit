@@ -2,34 +2,37 @@
 
 > 🚀 **AI writes your git commit messages. You ship code.**
 
-[![PyPI](https://img.shields.io/badge/pypi-v1.3.0-blue)](https://pypi.org/project/aicommit/)
+[![PyPI](https://img.shields.io/badge/pypi-v1.5.0-blue)](https://pypi.org/project/aicommit/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-35%20passed-brightgreen)](.)
+[![Tests](https://img.shields.io/badge/tests-48%20passed-brightgreen)](.)
 
 Stop staring at your terminal wondering what commit message to write. **aicommit** reads your staged changes, understands your code, and generates the perfect commit message — in any style you want.
 
 ## ✨ Features
 
-- 🧠 **AI-Powered** — Uses DeepSeek (free tier), OpenAI, or any OpenAI-compatible API
+- 🧠 **AI-Powered** — Uses DeepSeek, OpenAI, Anthropic, Ollama, or any compatible API
 - 🎨 **4 Commit Styles** — Conventional Commits, Gitmoji, Simple, Detailed
-- 🎯 **Smart Context** — Auto-detects scope from file paths, branch type, breaking changes
-- 🔍 **Branch-Aware** — Infers commit type from branch name (feat/xxx, fix/xxx, etc.)
-- 💥 **Breaking Change Detection** — Automatically flags breaking changes with `!`
-- 🔎 **Code Review** — AI-powered code review to catch bugs and issues before commit
+- 🎯 **Smart Context** — Auto-detects scope, branch type, breaking changes, monorepo packages
+- 🔍 **Branch-Aware** — Infers commit type from branch name (feat/xxx, fix/xxx)
+- 💥 **Breaking Change Detection** — Flags breaking changes with `!`
+- 📦 **Monorepo Support** — Detects package from directory structure
+- 🌐 **Multi-Provider** — DeepSeek, OpenAI, Anthropic, Ollama, custom endpoints
+- 🔎 **Code Review** — AI code review of staged changes
 - 📋 **PR Description** — Generate pull request descriptions from branch diffs
-- 📦 **Squash Messages** — Generate consolidated messages from multiple commits
-- 📝 **Changelog Generation** — Auto-generate changelog entries from commit history
-- ✅ **Conventional Validation** — Validate and auto-fix conventional commit format
-- 🔤 **Shell Completions** — Built-in completions for bash, zsh, fish, PowerShell
-- 🪝 **Git Hook & Pre-commit** — Install as prepare-commit-msg hook or pre-commit framework
-- 📋 **Clipboard Support** — Auto-copy generated messages with `--copy`
-- 🌍 **CI/CD Ready** — All config overridable via `AICOMMIT_*` environment variables
-- ✏️ **Edit Mode** — Open generated message in $EDITOR before committing
-- ⚡ **Zero Config** — Works out of the box with DeepSeek's free tier
-- 💬 **Interactive** — Preview before committing, or auto-confirm with `-y`
-- 🖥️ **Beautiful CLI** — Rich terminal output with progress animations and token stats
-- 🔌 **Any LLM** — Works with OpenAI, DeepSeek, Ollama, Groq, and more
+- 📦 **Squash Messages** — Generate consolidated messages from commits
+- 📝 **Changelog Generation** — Auto-generate changelog entries
+- ⚙️ **Config Management** — Set/get config via CLI (`--set`, `--get`)
+- 🚫 **.aicommitignore** — Per-project file/diff ignore patterns
+- ✅ **Conventional Validation** — Validate and auto-fix conventional commits
+- 🔄 **AI Retry** — Exponential backoff on API failures
+- 🔤 **Shell Completions** — bash, zsh, fish, PowerShell
+- 🪝 **Git Hook** — Install as prepare-commit-msg hook
+- 📋 **Clipboard** — Auto-copy with `--copy`
+- 🌍 **CI/CD Ready** — GitHub Action included, AICOMMIT_* env vars
+- ✏️ **Edit Mode** — Edit message in $EDITOR before commit
+- ⚡ **Auto-Stage** — `--stage` to auto-add files
+- 🖥️ **Beautiful CLI** — Rich output with token stats and progress
 
 ## 📦 Installation
 
@@ -46,13 +49,14 @@ pipx install aicommit
 ## 🚀 Quick Start
 
 ```bash
-# 1. Setup (one-time, 3 steps)
-aicommit --config
+# 1. Setup (one-time, 2 steps)
+aicommit --init
 
-# 2. Stage your changes
+# 2. Stage + generate + commit in one go
+aicommit --stage -y
+
+# Or step-by-step
 git add .
-
-# 3. Let AI write your commit
 aicommit
 ```
 
@@ -102,6 +106,12 @@ Commit with this message? [y/N]:
 ## 📖 Usage
 
 ```bash
+# Quick setup (configure git + AI provider)
+aicommit --init
+
+# Stage, generate, and commit in one command
+aicommit --stage -y
+
 # Basic usage
 aicommit                    # Generate and confirm
 
@@ -134,10 +144,38 @@ aicommit --uninstall-hook
 
 # Reconfigure
 aicommit --config
-
-# Show current config
-aicommit --status
 ```
+
+### ⚙️ Configuration Management
+
+```bash
+# Show full configuration
+aicommit --config
+
+# Get a specific value
+aicommit --get api.model
+
+# Set a value
+aicommit --set api.model=gpt-4
+
+# Reset to defaults
+aicommit --reset-config
+```
+
+### 🚫 .aicommitignore
+
+Create `.aicommitignore` in your repo root to exclude files from AI analysis:
+
+```gitignore
+# .aicommitignore
+*.lock
+*.log
+dist/*
+secrets.env
+generated/*
+```
+
+Patterns use the same glob syntax as `.gitignore` and are merged with built-in noise filtering.
 
 ### 🔎 Code Review
 
@@ -198,7 +236,7 @@ aicommit --completion fish > ~/.config/fish/completions/aicommit.fish
 aicommit --completion powershell
 ```
 
-### 🌍 CI/CD Environment Variables
+### 🌍 CI/CD & GitHub Actions
 
 All config can be overridden via environment variables:
 
@@ -206,7 +244,18 @@ All config can be overridden via environment variables:
 export AICOMMIT_API_KEY="sk-xxx"
 export AICOMMIT_MODEL="gpt-4o"
 export AICOMMIT_STYLE="conventional"
-export AICOMMIT_LANGUAGE="en"
+export AICOMMIT_PROVIDER="openai"
+export AICOMMIT_TEMPERATURE="0.3"
+```
+
+GitHub Action available — see [action.yml](action.yml):
+
+```yaml
+- uses: Yangge521/aicommit@master
+  with:
+    api_key: ${{ secrets.AICOMMIT_API_KEY }}
+    style: conventional
+    stage: true
 ```
 
 ## 🪝 Git Hook Integration

@@ -16,11 +16,13 @@ from .__init__ import __version__
 from .ai import AIError as AIErr, AIResult, generate_commit_message
 from .config import (
     CONFIG_FILE,
+    get_config_value,
     load_config,
     load_history,
     reset_config,
     save_config,
     save_history,
+    set_config_value,
     setup_wizard,
 )
 from .conventional import auto_fix_conventional, validate_conventional
@@ -43,7 +45,7 @@ from .git_utils import (
     uninstall_hook,
 )
 from .pr_generator import generate_pr_description
-from .render import console, show_diff_summary, show_generating, show_status
+from .render import console, show_diff_summary, show_generating
 
 
 # ── Main CLI ──────────────────────────────────────────
@@ -69,13 +71,15 @@ from .render import console, show_diff_summary, show_generating, show_status
 @click.option("--choose", "-c", "choose_mode", is_flag=True, help="Generate 3 options and pick one interactively")
 @click.option("--init", "init_mode", is_flag=True, help="One-command setup: configure git + AI provider")
 @click.option("--config", "config_mode", is_flag=True, help="Show current configuration")
+@click.option("--set", "-S", "set_config", default=None, metavar="KEY=VALUE", 
+              help="Set config value (e.g. --set api.model=gpt-4)")
+@click.option("--get", "-G", "get_config", default=None, metavar="KEY",
+              help="Get config value (e.g. --get api.model)")
 @click.option("--diff", "show_diff", is_flag=True, help="Preview staged diff before generating")
 @click.option("--stats", "show_stats", is_flag=True, help="Show usage statistics dashboard")
 @click.option("--temperature", type=float, default=None, help="Override AI temperature (0.0-1.0)")
 @click.option("--max-tokens", type=int, default=None, help="Max tokens for AI response")
-@click.option("--config", "run_config", is_flag=True, help="Run interactive configuration wizard")
 @click.option("--reset-config", is_flag=True, help="Reset config to defaults")
-@click.option("--status", "show_status", is_flag=True, help="Show current configuration")
 @click.option("--install-hook", is_flag=True, help="Install aicommit as git prepare-commit-msg hook")
 @click.option("--uninstall-hook", is_flag=True, help="Remove aicommit git hook")
 @click.option("--review", is_flag=True, help="AI code review of staged changes")
@@ -99,9 +103,9 @@ from .render import console, show_diff_summary, show_generating, show_status
 def main(
     style, hint, dry_run, auto_yes, edit, scope, signoff, no_verify,
     last, amend, template_file, auto_stage, co_author, issue_ref, choose_mode,
-    init_mode, config_mode, show_diff, show_stats,
+    init_mode, config_mode, set_config, get_config, show_diff, show_stats,
     temperature, max_tokens,
-    run_config, reset_config_flag, show_status,
+    reset_config_flag,
     install_hook_flag, uninstall_hook_flag,
     review, severity, generate_pr, pr_base,
     squash_n, changelog, version_tag,
@@ -115,15 +119,27 @@ def main(
     """
 
     # ── Meta commands (no git repo required) ──────────
-    if run_config:
-        setup_wizard()
+    if set_config:
+        if "=" not in set_config:
+            console.print("[red]✗ Use format: --set KEY=VALUE (e.g., --set api.model=gpt-4)[/red]")
+            return
+        k, v = set_config.split("=", 1)
+        try:
+            set_config_value(k.strip(), v.strip())
+            console.print(f"[green]✓ Set {k.strip()} = {v.strip()}[/green]")
+        except ValueError as e:
+            console.print(f"[red]✗ {e}[/red]")
+        return
+    if get_config:
+        try:
+            val = get_config_value(get_config.strip())
+            console.print(f"[cyan]{get_config.strip()}[/cyan] = [bold]{val}[/bold]")
+        except ValueError as e:
+            console.print(f"[red]✗ {e}[/red]")
         return
     if reset_config_flag:
         reset_config()
         console.print("[green]✓ Config reset to defaults[/green]")
-        return
-    if show_status:
-        show_status()
         return
     if shell:
         _print_completion(shell)
@@ -138,6 +154,9 @@ def main(
         _run_config_show()
         return
     if show_diff:
+        _run_diff_preview()
+        return
+    if show_stats:
         _run_stats()
         return
     if hook_file:
