@@ -79,6 +79,9 @@ from .render import console, show_diff_summary, show_generating
 @click.option("--stats", "show_stats", is_flag=True, help="Show usage statistics dashboard")
 @click.option("--temperature", type=float, default=None, help="Override AI temperature (0.0-1.0)")
 @click.option("--max-tokens", type=int, default=None, help="Max tokens for AI response")
+@click.option("--provider", "provider_override", default=None,
+              type=click.Choice(["openai", "anthropic", "ollama", "deepseek"]),
+              help="Override AI provider for this run")
 @click.option("--reset-config", is_flag=True, help="Reset config to defaults")
 @click.option("--install-hook", is_flag=True, help="Install aicommit as git prepare-commit-msg hook")
 @click.option("--uninstall-hook", is_flag=True, help="Remove aicommit git hook")
@@ -99,18 +102,23 @@ from .render import console, show_diff_summary, show_generating
               help="Generate shell completion script")
 @click.option("--copy", is_flag=True, help="Copy generated message to clipboard")
 @click.option("--log", "show_log", is_flag=True, help="Show recent aicommit message history")
+@click.option("--log-repo", default=None, help="Filter log by repository name")
+@click.option("--log-style", default=None,
+              type=click.Choice(["conventional", "emoji", "simple", "detailed"]),
+              help="Filter log by commit style")
+@click.option("--output", "-o", "output_file", default=None, help="Save generated message to a file")
 @click.option("--hook", "hook_file", default=None, hidden=True, help="Internal: used by git hook")
 def main(
     style, hint, dry_run, auto_yes, edit, scope, signoff, no_verify,
     last, amend, template_file, auto_stage, co_author, issue_ref, choose_mode,
     init_mode, config_mode, set_config, get_config, show_diff, show_stats,
-    temperature, max_tokens,
+    temperature, max_tokens, provider_override,
     reset_config_flag,
     install_hook_flag, uninstall_hook_flag,
     review, severity, generate_pr, pr_base,
     squash_n, changelog, version_tag,
     validate, auto_fix,
-    shell, copy, show_log, hook_file,
+    shell, copy, show_log, log_repo, log_style, output_file, hook_file,
 ):
     """AI-powered git commit message generator.
 
@@ -145,7 +153,7 @@ def main(
         _print_completion(shell)
         return
     if show_log:
-        _run_log()
+        _run_log(log_repo, log_style)
         return
     if init_mode:
         _run_init()
@@ -171,16 +179,16 @@ def main(
         uninstall_hook()
         return
     if generate_pr:
-        _run_pr_mode(pr_base, hint)
+        _run_pr_mode(pr_base, hint, output_file)
         return
     if squash_n:
-        _run_squash_mode(squash_n, style, hint)
+        _run_squash_mode(squash_n, style, hint, output_file)
         return
     if changelog:
-        _run_changelog_mode(version_tag, hint, style)
+        _run_changelog_mode(version_tag, hint, output_file)
         return
     if review:
-        _run_review_mode(severity, hint)
+        _run_review_mode(severity, hint, output_file)
         return
     if validate:
         _run_validate()
@@ -204,6 +212,10 @@ def main(
 
     config = load_config()
 
+    # Apply runtime provider override
+    if provider_override:
+        _apply_provider_override(config, provider_override)
+
     # First-run setup
     if not config["api"]["key"]:
         console.print("[yellow]⚠ First time? Let's set up your AI provider.[/yellow]")
@@ -219,7 +231,7 @@ def main(
 
     # Handle --last (generate message for existing commit)
     if last:
-        _run_last_mode(commit_style, language, hint, amend, signoff, no_verify, copy)
+        _run_last_mode(commit_style, language, hint, amend, signoff, no_verify, copy, output_file)
         return
 
     # Normal commit flow
@@ -307,6 +319,10 @@ def main(
         if copy:
             _copy_to_clipboard(result.message)
 
+        # Save to file
+        if output_file:
+            _save_to_file(result.message, output_file)
+
         # Dry run
         if dry_run:
             console.print("\n[dim]Dry run — not committing.[/dim]")
@@ -392,7 +408,7 @@ def _auto_stage_changes():
         sys.exit(1)
 
 
-def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: bool, no_verify: bool, copy: bool):
+def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: bool, no_verify: bool, copy: bool, output_file: str = None):
     """Generate message for last commit (amend)."""
     config = load_config()
     if not config["api"]["key"]:
@@ -445,6 +461,9 @@ def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: b
         if copy:
             _copy_to_clipboard(result.message)
 
+        if output_file:
+            _save_to_file(result.message, output_file)
+
         if amend:
             amend_args = ["commit", "--amend", "-m", result.message]
             if signoff:
@@ -466,7 +485,7 @@ def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: b
         sys.exit(1)
 
 
-def _run_pr_mode(base_branch: str, hint: str):
+def _run_pr_mode(base_branch: str, hint: str, output_file: str = None):
     """Generate a pull request description."""
     if not is_git_repo():
         console.print("[red]✗ Not a git repository.[/red]")
@@ -502,8 +521,11 @@ def _run_pr_mode(base_branch: str, hint: str):
         )
     )
 
+    if output_file:
+        _save_to_file(msg, output_file)
 
-def _run_squash_mode(num_commits: int, style: str, hint: str):
+
+def _run_squash_mode(num_commits: int, style: str, hint: str, output_file: str = None):
     """Generate a squash commit message."""
     if not is_git_repo():
         console.print("[red]✗ Not a git repository.[/red]")
@@ -533,8 +555,11 @@ def _run_squash_mode(num_commits: int, style: str, hint: str):
         )
     )
 
+    if output_file:
+        _save_to_file(msg, output_file)
 
-def _run_changelog_mode(version: str, hint: str, style: str):
+
+def _run_changelog_mode(version: str, hint: str, output_file: str = None):
     """Generate a changelog entry."""
     if not is_git_repo():
         console.print("[red]✗ Not a git repository.[/red]")
@@ -563,8 +588,11 @@ def _run_changelog_mode(version: str, hint: str, style: str):
         )
     )
 
+    if output_file:
+        _save_to_file(msg, output_file)
 
-def _run_review_mode(severity: str, hint: str):
+
+def _run_review_mode(severity: str, hint: str, output_file: str = None):
     """Run AI code review on staged changes."""
     from .review import analyze_diff
 
@@ -608,6 +636,9 @@ def _run_review_mode(severity: str, hint: str):
                 padding=(1, 2),
             )
         )
+
+        if output_file:
+            _save_to_file(result, output_file)
     except (GitErr, AIErr) as e:
         console.print(f"[red]✗ {e}[/red]")
         sys.exit(1)
@@ -655,15 +686,30 @@ def _run_auto_fix():
         sys.exit(1)
 
 
-def _run_log():
-    """Show recent aicommit message history."""
+def _run_log(repo_filter: str = None, style_filter: str = None):
+    """Show recent aicommit message history with optional filtering."""
     entries = load_history(50)
     if not entries:
         console.print("[dim]No history yet. Generate some commits first![/dim]")
         return
 
+    # Apply filters
+    if repo_filter:
+        entries = [e for e in entries if e.get("repo", "") and repo_filter.lower() in e["repo"].lower()]
+    if style_filter:
+        entries = [e for e in entries if e.get("style") == style_filter]
+
+    if not entries:
+        console.print("[dim]No matching entries found.[/dim]")
+        return
+
     console.print()
-    console.print(f"[bold]📜 aicommit History[/bold] ([dim]{len(entries)} entries[/dim])")
+    filter_desc = ""
+    if repo_filter:
+        filter_desc += f" repo={repo_filter}"
+    if style_filter:
+        filter_desc += f" style={style_filter}"
+    console.print(f"[bold]📜 aicommit History[/bold] ([dim]{len(entries)} entries[/dim]{filter_desc})")
     console.print("─" * 60)
 
     for entry in reversed(entries[-30:]):
@@ -675,7 +721,7 @@ def _run_log():
         model = entry.get("model", "?")
         tok = f"→{entry.get('tokens_out', 0)}"
         console.print(
-            f"[dim]{when}[/dim]  [cyan]{repo}[/cyan]/{branch}  "
+            f"[dim]{when}[/dim]  [cyan]{repo}[/cyan]/[dim]{branch}[/dim]  "
             f"[green]{msg}[/green]  "
             f"[dim]{style} | {model} | {tok} tok[/dim]"
         )
@@ -882,28 +928,66 @@ def _run_stats():
         return
 
     from collections import Counter
+    from datetime import datetime
+
     styles = Counter(e.get("style", "?") for e in entries)
     repos = Counter(e.get("repo", "?") for e in entries)
+    models = Counter(e.get("model", "?") for e in entries)
     total_tokens_in = sum(e.get("tokens_in", 0) for e in entries)
     total_tokens_out = sum(e.get("tokens_out", 0) for e in entries)
     total_time_ms = sum(e.get("time_ms", 0) for e in entries)
-    models = Counter(e.get("model", "?") for e in entries)
+    
+    # Date range
+    timestamps = [e.get("timestamp", "")[:10] for e in entries if e.get("timestamp")]
+    date_range = f"{timestamps[-1]} → {timestamps[0]}" if len(timestamps) >= 2 else (timestamps[0] if timestamps else "N/A")
+    
+    # Per-repo breakdown
+    total_commits = len(entries)
 
     table = Table(title="📊 aicommit Usage Stats", border_style="cyan")
     table.add_column("Metric", style="bold")
     table.add_column("Value")
 
-    table.add_row("Total commits", str(len(entries)))
+    table.add_row("Total commits", str(total_commits))
+    table.add_row("Date range", date_range)
     table.add_row("Total tokens (in/out)", f"{total_tokens_in:,} / {total_tokens_out:,}")
     table.add_row("Total AI time", f"{total_time_ms/1000:.1f}s")
     table.add_row("Avg tokens/commit", f"{(total_tokens_in + total_tokens_out) // max(len(entries), 1):,}")
     table.add_row("Avg time/commit", f"{total_time_ms / max(len(entries), 1):.0f}ms")
     table.add_row("Top style", styles.most_common(1)[0][0] if styles else "N/A")
     table.add_row("Top model", models.most_common(1)[0][0] if models else "N/A")
-    table.add_row("Repos", ", ".join(f"{r}({c})" for r, c in repos.most_common(5)))
 
     console.print()
     console.print(table)
+
+    # Per-repo breakdown
+    if len(repos) > 1:
+        console.print()
+        repo_table = Table(title="📁 Per-Repo Breakdown", border_style="green")
+        repo_table.add_column("Repository")
+        repo_table.add_column("Commits", justify="right")
+        repo_table.add_column("Share")
+        for repo, count in repos.most_common(10):
+            pct = count / total_commits * 100
+            bar = "█" * int(pct / 5) + "░" * (20 - int(pct / 5))
+            repo_table.add_row(repo, str(count), f"{bar} {pct:.0f}%")
+        console.print(repo_table)
+
+    # Model breakdown
+    if len(models) > 1:
+        console.print()
+        model_table = Table(title="🤖 Models Used", border_style="yellow")
+        model_table.add_column("Model")
+        model_table.add_column("Calls", justify="right")
+        model_table.add_column("Avg Time")
+        model_table.add_column("Avg Tokens")
+        for model, count in models.most_common():
+            model_entries = [e for e in entries if e.get("model") == model]
+            avg_time = sum(e.get("time_ms", 0) for e in model_entries) / len(model_entries)
+            avg_tok = sum(e.get("tokens_in", 0) + e.get("tokens_out", 0) for e in model_entries) / len(model_entries)
+            model_table.add_row(model, str(count), f"{avg_time:.0f}ms", f"{avg_tok:.0f}")
+        console.print(model_table)
+
     console.print()
     console.print("[dim]Use `aicommit log` to see recent messages.[/dim]")
 
@@ -964,6 +1048,33 @@ def _run_diff_preview():
     show_diff_summary(files, stats, scope=scope, branch_type=branch_type, breaking=breaking)
     console.print()
     console.print(Panel(diff or "(empty diff)", title="📋 Staged Diff", border_style="dim"))
+
+
+def _apply_provider_override(config: dict, provider: str):
+    """Apply a runtime provider override to the config."""
+    provider_map = {
+        "deepseek": ("openai", "https://api.deepseek.com/v1", "deepseek-chat"),
+        "openai": ("openai", "https://api.openai.com/v1", "gpt-4o-mini"),
+        "anthropic": ("anthropic", "https://api.anthropic.com/v1", "claude-3-5-haiku-latest"),
+        "ollama": ("openai", "http://localhost:11434/v1", "llama3.2"),
+    }
+    if provider in provider_map:
+        prov, endpoint, model = provider_map[provider]
+        config["api"]["provider"] = prov
+        config["api"]["endpoint"] = endpoint
+        config["api"]["model"] = model
+        console.print(f"[dim]🔌 Provider override: {provider} ({model})[/dim]")
+
+
+def _save_to_file(content: str, filepath: str):
+    """Save message content to a file."""
+    try:
+        p = Path(filepath)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        console.print(f"[dim]💾 Saved to {p.absolute()}[/dim]")
+    except Exception as e:
+        console.print(f"[red]✗ Failed to save: {e}[/red]")
 
 
 if __name__ == "__main__":

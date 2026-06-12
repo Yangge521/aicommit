@@ -168,7 +168,7 @@ def setup_wizard() -> dict:
         )
     )
 
-    config = DEFAULT_CONFIG.copy()
+    config = copy.deepcopy(DEFAULT_CONFIG)
 
     # Step 1: API Provider
     console.print("\n[bold]Step 1/4: Choose AI Provider[/bold]")

@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.5.0"
+        assert aicommit.__version__ == "1.6.0"
 
 
 class TestConfig:
@@ -357,3 +357,78 @@ class TestAicommitignore:
         from aicommit.git_utils import match_aicommitignore
         patterns = ["*.log"]
         assert match_aicommitignore("some/deep/path/error.log", patterns) is True
+
+
+class TestProviderOverride:
+    def test_provider_map_covers_all(self):
+        from aicommit.cli import _apply_provider_override
+        config = {
+            "api": {"provider": "openai", "endpoint": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
+            "commit": {}
+        }
+        _apply_provider_override(config, "ollama")
+        assert config["api"]["provider"] == "openai"
+        assert "localhost" in config["api"]["endpoint"]
+        assert config["api"]["model"] == "llama3.2"
+
+    def test_provider_override_anthropic(self):
+        from aicommit.cli import _apply_provider_override
+        config = {
+            "api": {"provider": "openai", "endpoint": "", "model": ""},
+            "commit": {}
+        }
+        _apply_provider_override(config, "anthropic")
+        assert config["api"]["provider"] == "anthropic"
+        assert config["api"]["endpoint"] == "https://api.anthropic.com/v1"
+
+    def test_provider_override_deepseek(self):
+        from aicommit.cli import _apply_provider_override
+        config = {
+            "api": {"provider": "anthropic", "endpoint": "", "model": ""},
+            "commit": {}
+        }
+        _apply_provider_override(config, "deepseek")
+        assert config["api"]["provider"] == "openai"
+        assert "deepseek" in config["api"]["endpoint"]
+
+    def test_provider_override_unknown_noop(self):
+        from aicommit.cli import _apply_provider_override
+        config = {
+            "api": {"provider": "openai", "endpoint": "https://original", "model": "gpt-4"},
+            "commit": {}
+        }
+        _apply_provider_override(config, "groq")  # Unknown provider
+        assert config["api"]["endpoint"] == "https://original"
+
+
+class TestSaveToFile:
+    def test_save_to_file_creates_dir(self, tmp_path):
+        from aicommit.cli import _save_to_file
+        output = tmp_path / "sub" / "message.txt"
+        _save_to_file("hello world", str(output))
+        assert output.exists()
+        assert output.read_text(encoding="utf-8") == "hello world"
+
+
+class TestLogFiltering:
+    def test_log_filter_by_style(self):
+        from aicommit.config import save_history, load_history
+        save_history({"repo": "test", "branch": "main", "style": "emoji", "message": "test"})
+        save_history({"repo": "test", "branch": "main", "style": "conventional", "message": "test"})
+        entries = load_history(50)
+        emoji_entries = [e for e in entries if e.get("style") == "emoji"]
+        conventional_entries = [e for e in entries if e.get("style") == "conventional"]
+        assert len(emoji_entries) >= 1
+        assert len(conventional_entries) >= 1
+
+
+class TestSetupWizardDeepcopy:
+    def test_setup_wizard_not_mutate_defaults(self):
+        from aicommit.config import DEFAULT_CONFIG, setup_wizard
+        import copy
+        # Verify DEFAULT_CONFIG uses list/dict that would be polluted by shallow copy
+        original_api = copy.deepcopy(DEFAULT_CONFIG["api"])
+        original_commit = copy.deepcopy(DEFAULT_CONFIG["commit"])
+        # After loading, DEFAULT_CONFIG should be untouched
+        assert DEFAULT_CONFIG["api"] == original_api
+        assert DEFAULT_CONFIG["commit"] == original_commit

@@ -2,10 +2,10 @@
 
 > 🚀 **AI writes your git commit messages. You ship code.**
 
-[![PyPI](https://img.shields.io/badge/pypi-v1.5.0-blue)](https://pypi.org/project/aicommit/)
+[![PyPI](https://img.shields.io/badge/pypi-v1.6.0-blue)](https://pypi.org/project/aicommit/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-48%20passed-brightgreen)](.)
+[![Tests](https://img.shields.io/badge/tests-55%20passed-brightgreen)](.)
 
 Stop staring at your terminal wondering what commit message to write. **aicommit** reads your staged changes, understands your code, and generates the perfect commit message — in any style you want.
 
@@ -26,6 +26,10 @@ Stop staring at your terminal wondering what commit message to write. **aicommit
 - 🚫 **.aicommitignore** — Per-project file/diff ignore patterns
 - ✅ **Conventional Validation** — Validate and auto-fix conventional commits
 - 🔄 **AI Retry** — Exponential backoff on API failures
+- 🔌 **Provider Override** — Switch AI provider at runtime (`--provider`)
+- 💾 **Save Output** — Save generated messages to file (`--output`/`-o`)
+- 📊 **Enhanced Stats** — Per-repo, per-model breakdown with date range
+- 🔍 **Log Filtering** — Filter history by repo or style (`--log-repo`, `--log-style`)
 - 🔤 **Shell Completions** — bash, zsh, fish, PowerShell
 - 🪝 **Git Hook** — Install as prepare-commit-msg hook
 - 📋 **Clipboard** — Auto-copy with `--copy`
@@ -238,6 +242,23 @@ aicommit --completion powershell
 
 ### 🌍 CI/CD & GitHub Actions
 
+## 🔌 Runtime Provider Override
+
+Temporarily switch AI providers without changing your config:
+
+```bash
+# Use OpenAI instead of your default DeepSeek
+aicommit --provider openai
+
+# Use a local model
+aicommit --provider ollama
+
+# Anthropic Claude
+aicommit --provider anthropic
+```
+
+### 🌍 CI/CD & GitHub Actions
+
 All config can be overridden via environment variables:
 
 ```bash
@@ -339,6 +360,49 @@ cd aicommit
 pip install -e ".[dev]"
 pytest
 ```
+
+## 📝 Changelog
+
+### v1.6.0
+
+- 🔌 `--provider` runtime override (switch AI provider without changing config)
+- 💾 `--output`/`-o` save generated messages to file
+- 📊 `--stats` now shows per-repo and per-model breakdown
+- 🔍 `--log-repo`/`--log-style` filter history entries
+
+### v1.5.0
+
+- ⚙️ `--set`/`--get` config management from CLI
+- 🚫 `.aicommitignore` per-project file/diff ignore patterns
+- 🐛 Fixed deepcopy config pollution, HIDDEN name error, --config dedup, --diff routing
+
+### v1.4.0
+
+- 🔄 AI retry with exponential backoff
+- 🪝 Git hook auto-install (prepare-commit-msg)
+- 📦 Monorepo package detection
+- 💥 Breaking change-aware (auto `!` prefix)
+- 🧼 `--reset-config` confirmation prompt
+- 📊 `--stats` usage statistics
+- 🎯 `--scope` / `--template` / `--copy` flags
+
+### v1.3.0
+
+- 🔍 `--review` AI code review
+- 📋 `--pr` PR description generator
+- 📦 `--squash` squash commit message
+- 📝 `--changelog` changelog generator
+- 💾 `--copy` clipboard support
+
+### v1.2.0
+
+- 🎨 4 commit styles: conventional, emoji, simple, detailed
+- 🏷️ Auto scope detection from file paths
+- ⚙️ `.aicommit.toml` config support
+
+### v1.0.0
+
+- 🚀 Initial release with DeepSeek API support
 
 ## 📝 License
 
