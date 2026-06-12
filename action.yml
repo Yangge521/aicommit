@@ -1,0 +1,83 @@
+name: "AI Commit Message"
+description: "Generate AI-powered git commit messages using aicommit"
+author: "aicommit"
+branding:
+  icon: "edit-3"
+  color: "green"
+
+inputs:
+  api_key:
+    description: "API key for the AI provider"
+    required: true
+  provider:
+    description: "AI provider (openai / anthropic / deepseek / ollama)"
+    default: "openai"
+  model:
+    description: "Model name"
+    default: "deepseek-chat"
+  endpoint:
+    description: "API endpoint URL"
+    default: "https://api.deepseek.com/v1"
+  style:
+    description: "Commit message style (conventional / emoji / simple / detailed)"
+    default: "conventional"
+  language:
+    description: "Commit message language (en / zh / ja / ko / ...)"
+    default: "en"
+  stage:
+    description: "Auto-stage all modified files before commit"
+    default: "false"
+  signoff:
+    description: "Add Signed-off-by trailer"
+    default: "false"
+  max_diff_lines:
+    description: "Max diff lines to send to AI"
+    default: "200"
+  co_author:
+    description: "Co-authored-by trailer"
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: Install aicommit
+      shell: bash
+      run: pip install aicommit
+
+    - name: Configure aicommit
+      shell: bash
+      run: |
+        mkdir -p ~/.config/aicommit
+        cat > ~/.config/aicommit/config.toml << 'EOF'
+        [api]
+        provider = "${{ inputs.provider }}"
+        model = "${{ inputs.model }}"
+        endpoint = "${{ inputs.endpoint }}"
+        key = "${{ inputs.api_key }}"
+        temperature = 0.3
+
+        [commit]
+        style = "${{ inputs.style }}"
+        language = "${{ inputs.language }}"
+        max_diff_lines = ${{ inputs.max_diff_lines }}
+        signoff = ${{ inputs.signoff }}
+        EOF
+
+    - name: Stage changes
+      if: inputs.stage == 'true'
+      shell: bash
+      run: git add -A
+
+    - name: Generate and commit
+      shell: bash
+      run: |
+        CO_AUTHOR_FLAG=""
+        if [ -n "${{ inputs.co_author }}" ]; then
+          CO_AUTHOR_FLAG="--co-author '${{ inputs.co_author }}'"
+        fi
+        aicommit --auto-yes $CO_AUTHOR_FLAG

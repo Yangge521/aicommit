@@ -23,13 +23,15 @@ from .config import (
     save_history,
     setup_wizard,
 )
-from .conventional import auto_fix_commit, get_last_commit_message, validate_conventional
+from .conventional import auto_fix_conventional, validate_conventional
 from .extra import generate_changelog, generate_squash_message
 from .git_utils import (
     GitError as GitErr,
     detect_breaking_changes,
+    detect_monorepo_package,
     detect_scope,
     get_branch_name,
+    get_last_commit_message,
     get_repo_name,
     get_staged_diff,
     get_staged_files,
@@ -63,8 +65,11 @@ from .render import console, show_diff_summary, show_generating, show_status
 @click.option("--template", "-t", "template_file", default=None, help="Custom prompt template file")
 @click.option("--stage", "-a", "auto_stage", is_flag=True, help="Auto-stage all modified files before commit")
 @click.option("--co-author", "co_author", multiple=True, default=None, help="Add Co-authored-by trailer (repeatable)")
+@click.option("--issue", "issue_ref", default=None, help="Link to issue (e.g. #42 or JIRA-123)")
 @click.option("--choose", "-c", "choose_mode", is_flag=True, help="Generate 3 options and pick one interactively")
 @click.option("--init", "init_mode", is_flag=True, help="One-command setup: configure git + AI provider")
+@click.option("--config", "config_mode", is_flag=True, help="Show current configuration")
+@click.option("--diff", "show_diff", is_flag=True, help="Preview staged diff before generating")
 @click.option("--stats", "show_stats", is_flag=True, help="Show usage statistics dashboard")
 @click.option("--temperature", type=float, default=None, help="Override AI temperature (0.0-1.0)")
 @click.option("--max-tokens", type=int, default=None, help="Max tokens for AI response")
@@ -90,10 +95,11 @@ from .render import console, show_diff_summary, show_generating, show_status
               help="Generate shell completion script")
 @click.option("--copy", is_flag=True, help="Copy generated message to clipboard")
 @click.option("--log", "show_log", is_flag=True, help="Show recent aicommit message history")
-@click.option("--hook", "hook_file", default=None, help=HIDDEN, hidden=True)
+@click.option("--hook", "hook_file", default=None, hidden=True, help="Internal: used by git hook")
 def main(
     style, hint, dry_run, auto_yes, edit, scope, signoff, no_verify,
-    last, amend, template_file, auto_stage, co_author, choose_mode, init_mode, show_stats,
+    last, amend, template_file, auto_stage, co_author, issue_ref, choose_mode,
+    init_mode, config_mode, show_diff, show_stats,
     temperature, max_tokens,
     run_config, reset_config_flag, show_status,
     install_hook_flag, uninstall_hook_flag,
@@ -128,7 +134,10 @@ def main(
     if init_mode:
         _run_init()
         return
-    if show_stats:
+    if config_mode:
+        _run_config_show()
+        return
+    if show_diff:
         _run_stats()
         return
     if hook_file:
@@ -204,6 +213,9 @@ def main(
     if template_file:
         try:
             custom_template = Path(template_file).read_text(encoding="utf-8")
+            custom_template = _expand_template_vars(custom_template,
+                branch=get_branch_name(), scope=scope or detect_scope(get_staged_files()),
+            )
         except FileNotFoundError:
             console.print(f"[red]✗ Template file not found: {template_file}[/red]")
             sys.exit(1)
@@ -218,7 +230,7 @@ def main(
         stats = get_staged_stats()
         branch = get_branch_name()
         repo = get_repo_name()
-        detected_scope = scope or detect_scope(files)
+        detected_scope = scope or detect_scope(files) or detect_monorepo_package(files)
         branch_type = infer_type_from_branch(branch)
         breaking = detect_breaking_changes(diff)
 
@@ -291,12 +303,21 @@ def main(
 
         # Edit
         final_msg = result.message
+
+        # Body wrapping for detailed style
+        if commit_style == "detailed" and "\n\n" in final_msg:
+            from .conventional import wrap_body
+            final_msg = wrap_body(final_msg)
+
         if edit:
             final_msg = _edit_message(final_msg)
 
         # Add co-author trailers
         for author in co_author:
             final_msg += f"\nCo-authored-by: {author}"
+        # Add issue reference
+        if issue_ref:
+            final_msg += f"\nRefs: {issue_ref}"
 
         # Commit
         commit_args = ["commit", "-m", final_msg]
@@ -600,7 +621,7 @@ def _run_auto_fix():
         console.print("[red]✗ No commits found.[/red]")
         sys.exit(1)
     try:
-        fixed = auto_fix_commit(msg)
+        fixed = auto_fix_conventional(msg)
         console.print(f"[green]✓ Fixed message:[/green]")
         console.print(f"  [dim]Old:[/dim] {msg}")
         console.print(f"  [dim]New:[/dim] {fixed}")
@@ -866,6 +887,64 @@ def _run_stats():
     console.print(table)
     console.print()
     console.print("[dim]Use `aicommit log` to see recent messages.[/dim]")
+
+
+def _expand_template_vars(template: str, **values) -> str:
+    """Expand {key} placeholders in a custom template."""
+    result = template
+    for key, val in values.items():
+        result = result.replace(f"{{{key}}}", str(val) if val else "")
+    return result
+
+
+def _run_config_show():
+    """Show current configuration."""
+    config = load_config()
+    console.print(Panel("🔧 [bold]aicommit Configuration[/bold]", border_style="cyan"))
+
+    table = Table(border_style="dim")
+    table.add_column("Section", style="bold cyan")
+    table.add_column("Key")
+    table.add_column("Value")
+
+    api = config["api"]
+    commit = config["commit"]
+
+    table.add_row("api", "provider", api.get("provider", "openai"))
+    table.add_row("api", "model", api.get("model", ""))
+    table.add_row("api", "endpoint", api.get("endpoint", ""))
+    table.add_row("api", "key", (api["key"][:6] + "..." + api["key"][-4:]) if len(api.get("key", "")) > 10 else (api["key"] or "(not set)"))
+    table.add_row("api", "temperature", str(api.get("temperature", 0.3)))
+    table.add_row("commit", "style", commit.get("style", "conventional"))
+    table.add_row("commit", "language", commit.get("language", "en"))
+    table.add_row("commit", "max_diff_lines", str(commit.get("max_diff_lines", 200)))
+    table.add_row("commit", "signoff", str(commit.get("signoff", False)))
+    table.add_row("commit", "no_verify", str(commit.get("no_verify", False)))
+
+    console.print(table)
+
+
+def _run_diff_preview():
+    """Preview staged diff without generating a message."""
+    if not is_git_repo():
+        console.print("[red]✗ Not a git repository.[/red]")
+        return
+    if not has_staged_changes():
+        console.print("[yellow]ℹ No staged changes.[/yellow]")
+        return
+
+    config = load_config()
+    diff = get_staged_diff(max_lines=config["commit"]["max_diff_lines"], skip_noise=True)
+    files = get_staged_files()
+    stats = get_staged_stats()
+    scope = detect_scope(files)
+    branch = get_branch_name()
+    branch_type = infer_type_from_branch(branch)
+    breaking = detect_breaking_changes(diff)
+
+    show_diff_summary(files, stats, scope=scope, branch_type=branch_type, breaking=breaking)
+    console.print()
+    console.print(Panel(diff or "(empty diff)", title="📋 Staged Diff", border_style="dim"))
 
 
 if __name__ == "__main__":

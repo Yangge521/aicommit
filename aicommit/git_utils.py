@@ -375,3 +375,35 @@ def uninstall_hook() -> str:
 
     hook_path.unlink()
     return str(hook_path)
+
+
+def detect_monorepo_package(files: list[str]) -> Optional[str]:
+    """Detect if changes are within a single monorepo package.
+
+    Looks for common monorepo structures: packages/*/ dirs, 
+    each with their own package.json / pyproject.toml / Cargo.toml.
+    Returns the package name if all files are in one package.
+    """
+    import json
+
+    packages_dir = Path("packages")
+    if not packages_dir.is_dir():
+        # Also check common alternatives
+        for alt in ["apps", "services", "libs", "modules"]:
+            if Path(alt).is_dir():
+                packages_dir = Path(alt)
+                break
+        else:
+            return None
+
+    # Find which packages the files belong to
+    hints = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod", "build.gradle", "pom.xml"]
+    packages = set()
+    for f in files:
+        parts = Path(f).parts
+        if len(parts) >= 2 and parts[0] == packages_dir.name:
+            packages.add(parts[1])
+
+    if len(packages) == 1:
+        return packages.pop()
+    return None

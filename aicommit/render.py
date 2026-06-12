@@ -7,6 +7,8 @@ from rich.prompt import Confirm
 from rich.table import Table
 from rich.text import Text
 
+from .config import load_config
+
 console = Console()
 
 
@@ -155,3 +157,9 @@ def show_hook_uninstalled(path: str):
 def show_reset_done():
     """Show config reset confirmation."""
     console.print("[green]✓ Configuration reset to defaults.[/green]")
+
+
+def show_status():
+    """Alias for show_config_status — used by --status flag."""
+    show_config_status(load_config())
+

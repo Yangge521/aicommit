@@ -140,3 +140,32 @@ def conventional_to_emoji(message: str) -> str:
     if parsed["body"]:
         result += "\n\n" + parsed["body"]
     return result
+
+
+def wrap_body(message: str, width: int = 72) -> str:
+    """Wrap commit message body lines at specified width.
+
+    Splits on double-newline to preserve paragraph breaks,
+    then wraps each paragraph independently.
+    """
+    import textwrap
+
+    parts = message.split("\n\n", 1)
+    if len(parts) == 1:
+        return message
+
+    subject = parts[0]
+    body = parts[1]
+
+    # Wrap each paragraph
+    paragraphs = body.split("\n\n")
+    wrapped_paras = []
+    for para in paragraphs:
+        # Preserve bullet points
+        if para.strip().startswith(("- ", "* ", "1. ")):
+            wrapped_paras.append(para)
+        else:
+            wrapped = textwrap.fill(para.strip(), width=width)
+            wrapped_paras.append(wrapped)
+
+    return subject + "\n\n" + "\n\n".join(wrapped_paras)

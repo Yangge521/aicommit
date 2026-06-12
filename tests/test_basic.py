@@ -285,3 +285,37 @@ class TestAIStats:
         save_history({"repo": "test", "branch": "main", "style": "feat", "message": "test"})
         entries = load_history(limit=50)
         assert any(e["message"] == "test" for e in entries)
+
+
+class TestAIClient:
+    def test_ai_client_import(self):
+        from aicommit.ai_client import call_ai, _call_ai_once
+        assert callable(call_ai)
+        assert callable(_call_ai_once)
+
+    def test_template_vars(self):
+        from aicommit.cli import _expand_template_vars
+        result = _expand_template_vars(
+            "feat({scope}): add {branch} feature",
+            scope="auth", branch="oauth/login"
+        )
+        assert result == "feat(auth): add oauth/login feature"
+
+
+class TestMonorepo:
+    def test_monorepo_import(self):
+        from aicommit.git_utils import detect_monorepo_package
+        assert callable(detect_monorepo_package)
+
+
+class TestWrapBody:
+    def test_wrap_body_simple(self):
+        from aicommit.conventional import wrap_body
+        result = wrap_body("feat: test\n\nThis is a long description that needs wrapping.")
+        assert result.startswith("feat: test")
+        assert "\n\n" in result
+
+    def test_wrap_body_no_body(self):
+        from aicommit.conventional import wrap_body
+        result = wrap_body("feat: add login")
+        assert result == "feat: add login"
