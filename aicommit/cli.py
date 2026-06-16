@@ -787,6 +787,8 @@ def _edit_message(message: str, editor_cmd: str | None = None) -> str:
         message: The commit message to edit.
         editor_cmd: Override editor command (e.g. 'vim', 'code --wait').
     """
+    import shlex
+
     if editor_cmd:
         editor = editor_cmd
     else:
@@ -799,7 +801,7 @@ def _edit_message(message: str, editor_cmd: str | None = None) -> str:
             f.write("\n\n# Edit the commit message above.")
             f.write("\n# Lines starting with # will be ignored.\n")
 
-        sp.run([editor, tmp_path], check=False)
+        sp.run([*shlex.split(editor), tmp_path], check=False)
 
         with open(tmp_path, "r", encoding="utf-8") as f:
             edited = f.read()
@@ -932,13 +934,18 @@ def _choose_commit_message(**kwargs) -> AIResult:
                     sys.exit(1)
             progress.remove_task(task)
 
+    if not options:
+        console.print("[red]✗ Could not generate any commit messages.[/red]")
+        sys.exit(1)
+
     console.print()
     for i, opt in enumerate(options, 1):
         letter = ["a", "b", "c"][i - 1]
         console.print(f"  [bold cyan]{letter})[/bold cyan] {opt.message}")
 
+    valid_choices = ["a", "b", "c"][:len(options)]
     console.print()
-    choice = Prompt.ask("[bold]Pick one[/bold]", choices=["a", "b", "c"], default="a")
+    choice = Prompt.ask("[bold]Pick one[/bold]", choices=valid_choices, default=valid_choices[0])
     idx = {"a": 0, "b": 1, "c": 2}[choice]
     return options[idx]
 
@@ -1081,6 +1088,13 @@ def _run_config_show():
     table.add_row("commit", "max_diff_lines", str(commit.get("max_diff_lines", 200)))
     table.add_row("commit", "signoff", str(commit.get("signoff", False)))
     table.add_row("commit", "no_verify", str(commit.get("no_verify", False)))
+
+    # Templates section
+    templates = config.get("templates", {})
+    if templates:
+        for i, (name, fmt) in enumerate(templates.items()):
+            section = "templates" if i == 0 else ""
+            table.add_row(section, name, fmt[:60] + ("..." if len(fmt) > 60 else ""))
 
     console.print(table)
 

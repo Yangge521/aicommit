@@ -547,3 +547,21 @@ class TestEditorCmdOverride:
         sig = inspect.signature(_edit_message)
         params = list(sig.parameters.keys())
         assert "editor_cmd" in params
+
+    def test_editor_cmd_splits_simple(self):
+        import shlex
+        assert shlex.split("vim") == ["vim"]
+        assert shlex.split("code --wait") == ["code", "--wait"]
+        assert shlex.split("nvim") == ["nvim"]
+
+    def test_editor_cmd_splits_quoted_path(self):
+        import shlex
+        result = shlex.split(r'"C:\Program Files\Editor\editor.exe" --flag')
+        assert result == [r"C:\Program Files\Editor\editor.exe", "--flag"]
+
+    def test_edit_message_uses_shlex(self):
+        from aicommit.cli import _edit_message
+        import inspect
+        src = inspect.getsource(_edit_message)
+        assert "shlex.split" in src
+        assert "[*shlex.split(editor), tmp_path]" in src
