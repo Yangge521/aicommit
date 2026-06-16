@@ -88,9 +88,9 @@ from .render import console, show_diff_summary, show_generating
 @click.option("--provider", "provider_override", default=None,
               type=click.Choice(["openai", "anthropic", "ollama", "deepseek"]),
               help="Override AI provider for this run")
-@click.option("--reset-config", is_flag=True, help="Reset config to defaults")
-@click.option("--install-hook", is_flag=True, help="Install aicommit as git prepare-commit-msg hook")
-@click.option("--uninstall-hook", is_flag=True, help="Remove aicommit git hook")
+@click.option("--reset-config", "reset_config_flag", is_flag=True, help="Reset config to defaults")
+@click.option("--install-hook", "install_hook_flag", is_flag=True, help="Install aicommit as git prepare-commit-msg hook")
+@click.option("--uninstall-hook", "uninstall_hook_flag", is_flag=True, help="Remove aicommit git hook")
 @click.option("--review", is_flag=True, help="AI code review of staged changes")
 @click.option("--severity", default="all",
               type=click.Choice(["all", "high", "medium", "low"]),
@@ -493,14 +493,21 @@ def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: b
         sys.exit(1)
 
     try:
+        # Try HEAD~1 first; fallback to showing HEAD for initial commits
         diff = sp.run(
             ["git", "diff", "HEAD~1", "--unified=3"],
             capture_output=True, text=True,
             creationflags=0x08000000,
         )
         if diff.returncode != 0:
-            console.print("[red]✗ Could not get last commit diff (need at least 2 commits).[/red]")
-            sys.exit(1)
+            diff = sp.run(
+                ["git", "show", "--unified=3", "HEAD"],
+                capture_output=True, text=True,
+                creationflags=0x08000000,
+            )
+            if diff.returncode != 0:
+                console.print("[red]✗ Could not get last commit diff.[/red]")
+                sys.exit(1)
 
         diff_text = diff.stdout
         diff_lines = diff_text.split("\n")
@@ -1334,14 +1341,21 @@ def _run_retry_mode(style: str, language: str, hint: str, signoff: bool, no_veri
         sys.exit(1)
 
     try:
+        # Try HEAD~1 first; fallback to showing HEAD for initial commits
         diff_result = sp.run(
             ["git", "diff", "HEAD~1", "--unified=3"],
             capture_output=True, text=True,
             creationflags=0x08000000,
         )
         if diff_result.returncode != 0:
-            console.print("[red]✗ Could not get last commit diff (need at least 2 commits).[/red]")
-            sys.exit(1)
+            diff_result = sp.run(
+                ["git", "show", "--unified=3", "HEAD"],
+                capture_output=True, text=True,
+                creationflags=0x08000000,
+            )
+            if diff_result.returncode != 0:
+                console.print("[red]✗ Could not get last commit diff.[/red]")
+                sys.exit(1)
 
         diff_text = diff_result.stdout
         diff_lines = diff_text.split("\n")
@@ -1540,7 +1554,13 @@ def _run_group_by_mode(group_by: str, style: str, language: str, hint: str,
             commit_args.insert(1, "--no-verify")
 
         # First unstage everything, then stage only this group
-        sp.run(["git", "reset", "HEAD", "--"], capture_output=True, creationflags=0x08000000)
+        # Use git rm --cached for initial commits (no HEAD), git reset otherwise
+        reset_result = sp.run(["git", "reset", "HEAD", "--"], capture_output=True, creationflags=0x08000000)
+        if reset_result.returncode != 0:
+            # Initial commit: no HEAD to reset from, unstage individually
+            for staged_file in files:
+                if staged_file not in group_files:
+                    sp.run(["git", "rm", "--cached", staged_file], capture_output=True, creationflags=0x08000000)
         sp.run(["git", "add", "--"] + group_files, capture_output=True, creationflags=0x08000000)
 
         out = sp.run(
