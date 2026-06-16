@@ -69,6 +69,9 @@ def generate_commit_message(
     )
 
     message = result["content"]
+    if not message or not message.strip():
+        raise AIError("AI returned an empty response. Please try again.")
+
     # Clean up markdown code block wrapping
     if message.startswith("```"):
         lines = message.split("\n")

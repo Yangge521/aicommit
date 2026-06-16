@@ -424,22 +424,22 @@ def detect_monorepo_package(files: list[str]) -> Optional[str]:
     """
     import json
 
-    packages_dir = Path("packages")
-    if not packages_dir.is_dir():
-        # Also check common alternatives
-        for alt in ["apps", "services", "libs", "modules"]:
-            if Path(alt).is_dir():
-                packages_dir = Path(alt)
-                break
-        else:
-            return None
+    # Check all possible monorepo root directories
+    monorepo_dirs = ["packages", "apps", "services", "libs", "modules"]
+    found_root = None
+    for d in monorepo_dirs:
+        if Path(d).is_dir():
+            found_root = d
+            break
+
+    if not found_root:
+        return None
 
     # Find which packages the files belong to
-    hints = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod", "build.gradle", "pom.xml"]
     packages = set()
     for f in files:
         parts = Path(f).parts
-        if len(parts) >= 2 and parts[0] == packages_dir.name:
+        if len(parts) >= 2 and parts[0] == found_root:
             packages.add(parts[1])
 
     if len(packages) == 1:

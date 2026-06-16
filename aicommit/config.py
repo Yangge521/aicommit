@@ -122,7 +122,10 @@ def save_config(config: dict) -> None:
     if templates:
         lines.append("[templates]")
         for name, fmt in templates.items():
-            lines.append(f'{name} = {json.dumps(fmt, ensure_ascii=False)}')
+            # Quote template names to avoid TOML dotted key parsing
+            # (e.g., "my.template" without quotes would be parsed as [my] table key)
+            safe_name = json.dumps(name, ensure_ascii=False)  # adds quotes and escapes
+            lines.append(f'{safe_name} = {json.dumps(fmt, ensure_ascii=False)}')
         lines.append("")
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
@@ -140,11 +143,25 @@ def reset_config() -> None:
 
 
 def save_history(entry: dict) -> None:
-    """Append a commit history entry as JSON lines."""
+    """Append a commit history entry as JSON lines.
+    
+    Auto-rotates when file exceeds 1000 entries, keeping the latest 500.
+    """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     entry["timestamp"] = datetime.datetime.now().isoformat()
     with open(HISTORY_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    # Auto-rotate: if file grows too large, trim to recent entries
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        if len(lines) > 1000:
+            recent = lines[-500:]
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                f.writelines(recent)
+    except Exception:
+        pass  # Rotation failure should not block saves
 
 
 def load_history(limit: int = 50) -> list[dict]:
@@ -308,6 +325,14 @@ TEMPLATE_VARIABLES = {
 
 def save_message_template(name: str, fmt: str) -> None:
     """Save a named message template to config."""
+    if not name or not name.strip():
+        raise ValueError("Template name cannot be empty")
+    # Reject names that would break TOML parsing (dots create nested keys)
+    if "." in name:
+        raise ValueError(
+            "Template name cannot contain dots ('.'), as they conflict with TOML syntax. "
+            "Use hyphens or underscores instead (e.g., 'my-template' instead of 'my.template')."
+        )
     config = load_config()
     if "templates" not in config:
         config["templates"] = {}

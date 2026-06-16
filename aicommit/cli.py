@@ -1134,6 +1134,7 @@ def _run_config_show():
     table.add_row("commit", "style", commit.get("style", "conventional"))
     table.add_row("commit", "language", commit.get("language", "en"))
     table.add_row("commit", "max_diff_lines", str(commit.get("max_diff_lines", 200)))
+    table.add_row("commit", "auto_confirm", str(commit.get("auto_confirm", False)))
     table.add_row("commit", "signoff", str(commit.get("signoff", False)))
     table.add_row("commit", "no_verify", str(commit.get("no_verify", False)))
 
@@ -1558,7 +1559,13 @@ def _run_group_by_mode(group_by: str, style: str, language: str, hint: str,
         reset_result = sp.run(["git", "reset", "HEAD", "--"], capture_output=True, creationflags=0x08000000)
         if reset_result.returncode != 0:
             # Initial commit: no HEAD to reset from, unstage individually
-            for staged_file in files:
+            # Only unstage files that are NOT in this group and are still staged
+            currently_staged = sp.run(
+                ["git", "diff", "--cached", "--name-only"],
+                capture_output=True, text=True, creationflags=0x08000000,
+            )
+            staged_list = [f for f in currently_staged.stdout.strip().split("\n") if f]
+            for staged_file in staged_list:
                 if staged_file not in group_files:
                     sp.run(["git", "rm", "--cached", staged_file], capture_output=True, creationflags=0x08000000)
         sp.run(["git", "add", "--"] + group_files, capture_output=True, creationflags=0x08000000)

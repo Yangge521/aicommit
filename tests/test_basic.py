@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.8.0"
+        assert aicommit.__version__ == "1.8.1"
 
 
 class TestConfig:
@@ -661,3 +661,68 @@ class TestBodyFile:
         runner = CliRunner()
         result = runner.invoke(main, ["--help"])
         assert "--body-file" in result.output
+
+
+class TestClickParamMapping:
+    """Tests for click parameter name mapping fixes."""
+
+    def test_reset_config_no_crash(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--reset-config"])
+        assert result.exit_code == 0
+
+    def test_config_flag_no_crash(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--config"])
+        assert result.exit_code == 0
+        assert "Configuration" in result.output
+
+
+class TestTemplateDotName:
+    """Tests for template name with dots rejection."""
+
+    def test_save_template_rejects_dots(self):
+        from aicommit.config import save_message_template
+        import pytest
+        with pytest.raises(ValueError, match="dots"):
+            save_message_template("my.template", "{type}: {desc}")
+
+    def test_save_template_accepts_hyphens(self):
+        from aicommit.config import save_message_template, delete_message_template
+        save_message_template("my-template", "{type}: {desc}")
+        delete_message_template("my-template")  # cleanup
+
+
+class TestAIEmptyResponse:
+    """Tests for AI empty response guard."""
+
+    def test_generate_rejects_empty(self):
+        from aicommit.ai import generate_commit_message, AIError
+        import unittest.mock as mock
+        with mock.patch("aicommit.ai.call_ai", return_value={"content": "", "model": "test", "prompt_tokens": 0, "completion_tokens": 0, "time_ms": 0}):
+            import pytest
+            with pytest.raises(AIError, match="empty"):
+                generate_commit_message(diff="test diff")
+
+    def test_generate_rejects_whitespace(self):
+        from aicommit.ai import generate_commit_message, AIError
+        import unittest.mock as mock
+        with mock.patch("aicommit.ai.call_ai", return_value={"content": "   ", "model": "test", "prompt_tokens": 0, "completion_tokens": 0, "time_ms": 0}):
+            import pytest
+            with pytest.raises(AIError, match="empty"):
+                generate_commit_message(diff="test diff")
+
+
+class TestConfigShowComplete:
+    """Tests for config display completeness."""
+
+    def test_config_shows_auto_confirm(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--config"])
+        assert "auto_confirm" in result.output
