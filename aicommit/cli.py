@@ -342,7 +342,7 @@ def main(
                         hint=hint,
                         branch_hint=f"Branch: {branch}, type: {branch_type}" if branch_type else "",
                         breaking_hint="BREAKING CHANGE DETECTED" if breaking else "",
-                        file_list=files,
+                        file_list="\n".join(f"- {f}" for f in files),
                         template=custom_template,
                         max_tokens_override=max_tokens,
                         temperature_override=temp_override,
@@ -564,9 +564,10 @@ def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: b
 
         if amend:
             amend_args = ["commit", "--amend", "-m", final_msg]
-            if signoff:
+            config = load_config()
+            if signoff or config["commit"].get("signoff"):
                 amend_args.append("--signoff")
-            if no_verify:
+            if no_verify or config["commit"].get("no_verify"):
                 amend_args.append("--no-verify")
             out = sp.run(
                 ["git"] + amend_args,
@@ -773,11 +774,14 @@ def _run_auto_fix():
         console.print(f"[green]✓ Fixed message:[/green]")
         console.print(f"  [dim]Old:[/dim] {msg}")
         console.print(f"  [dim]New:[/dim] {fixed}")
-        sp.run(
+        amend_result = sp.run(
             ["git", "commit", "--amend", "-m", fixed],
             capture_output=True, text=True,
             creationflags=0x08000000,
         )
+        if amend_result.returncode != 0:
+            console.print(f"[red]✗ git commit --amend failed:[/red]\n{amend_result.stderr}")
+            sys.exit(1)
         console.print("[green]✓ Last commit message updated.[/green]")
     except ValueError as e:
         console.print(f"[red]✗ {e}[/red]")
@@ -972,7 +976,7 @@ def _choose_commit_message(**kwargs) -> AIResult:
                     file_list=kwargs.get("files"),
                     template=kwargs.get("custom_template"),
                     max_tokens_override=kwargs.get("max_tokens_override"),
-                    temperature_override=kwargs.get("temperature_override", 0.3) + i * 0.15,
+                    temperature_override=kwargs.get("temperature_override", 0.3) + i * 0.1,
                 )
                 options.append(r)
             except (GitErr, AIErr) as e:
@@ -1419,9 +1423,11 @@ def _run_retry_mode(style: str, language: str, hint: str, signoff: bool, no_veri
             return
 
         amend_args = ["commit", "--amend", "-m", final_msg]
-        if signoff:
+        config_signoff = load_config()["commit"].get("signoff", False)
+        config_no_verify = load_config()["commit"].get("no_verify", False)
+        if signoff or config_signoff:
             amend_args.append("--signoff")
-        if no_verify:
+        if no_verify or config_no_verify:
             amend_args.append("--no-verify")
         out = sp.run(
             ["git"] + amend_args,
@@ -1491,7 +1497,7 @@ def _run_group_by_mode(group_by: str, style: str, language: str, hint: str,
 
     if len(groups) <= 1:
         console.print(f"[yellow]ℹ Only 1 group found. Use regular aicommit instead of --group-by.[/yellow]")
-        sys.exit(0)
+        return
 
     console.print(f"[bold]📂 Found {len(groups)} groups:[/bold]")
     for key, group_files in sorted(groups.items()):
@@ -1577,8 +1583,8 @@ def _run_group_by_mode(group_by: str, style: str, language: str, hint: str,
         )
         if out.returncode != 0:
             console.print(f"  [red]✗ Commit failed: {out.stderr}[/red]")
-            # Re-stage everything on failure
-            sp.run(["git", "add", "-A"], capture_output=True, creationflags=0x08000000)
+            # Re-stage only this group's files on failure
+            sp.run(["git", "add", "--"] + group_files, capture_output=True, creationflags=0x08000000)
             continue
         console.print(f"  [green]✓ Committed {key}[/green]")
 

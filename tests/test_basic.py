@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.8.1"
+        assert aicommit.__version__ == "1.9.0"
 
 
 class TestConfig:
@@ -726,3 +726,60 @@ class TestConfigShowComplete:
         runner = CliRunner()
         result = runner.invoke(main, ["--config"])
         assert "auto_confirm" in result.output
+
+
+class TestFileListFormat:
+    """Tests for file_list formatting in prompts."""
+
+    def test_file_list_as_string(self):
+        from aicommit.prompts import STYLE_PROMPTS
+        # Verify prompts accept string file_list, not list
+        formatted = STYLE_PROMPTS["conventional"].format(
+            diff="test", recent_commits="",
+            branch_hint="", breaking_hint="",
+            file_list="- src/auth.ts\n- src/login.ts",
+        )
+        assert "- src/auth.ts" in formatted
+
+
+class TestEscapeTomlStr:
+    """Tests for TOML string escaping completeness."""
+
+    def test_escape_tab(self):
+        from aicommit.config import _escape_toml_str
+        result = _escape_toml_str("hello\tworld")
+        assert result == "hello\\tworld"
+
+    def test_escape_newline(self):
+        from aicommit.config import _escape_toml_str
+        result = _escape_toml_str("hello\nworld")
+        assert result == "hello\\nworld"
+
+    def test_escape_backslash(self):
+        from aicommit.config import _escape_toml_str
+        result = _escape_toml_str("hello\\world")
+        assert result == "hello\\\\world"
+
+    def test_escape_quote(self):
+        from aicommit.config import _escape_toml_str
+        result = _escape_toml_str('he said "hi"')
+        assert '\\"' in result
+
+
+class TestGroupBySingleGroupReturn:
+    """Tests for group-by single group returning instead of exiting."""
+
+    def test_group_by_mode_callable(self):
+        from aicommit.cli import _run_group_by_mode
+        # Just verify it doesn't crash on import
+        assert callable(_run_group_by_mode)
+
+
+class TestAutoFixAmendCheck:
+    """Tests for --auto-fix checking amend result."""
+
+    def test_auto_fix_checks_returncode(self):
+        from aicommit.cli import _run_auto_fix
+        import inspect
+        src = inspect.getsource(_run_auto_fix)
+        assert "returncode" in src

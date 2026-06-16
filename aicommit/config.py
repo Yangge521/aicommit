@@ -133,7 +133,7 @@ def save_config(config: dict) -> None:
 
 def _escape_toml_str(s: str) -> str:
     """Escape a string for safe TOML embedding."""
-    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t")
 
 
 def reset_config() -> None:
