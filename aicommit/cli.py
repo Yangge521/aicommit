@@ -47,6 +47,7 @@ from .git_utils import (
     infer_type_from_branch,
     install_hook,
     is_git_repo,
+    run_git,
     uninstall_hook,
 )
 from .pr_generator import generate_pr_description
@@ -121,6 +122,18 @@ from .render import console, show_diff_summary, show_generating
               help="Delete a saved message template")
 @click.option("--editor-cmd", "editor_cmd_override", default=None, metavar="EDITOR",
               help="Editor command to use with -e (e.g. --editor-cmd vim)")
+@click.option("--retry", "retry_last", is_flag=True,
+              help="Regenerate the last commit message (re-run AI with same diff)")
+@click.option("--group-by", "group_by",
+              type=click.Choice(["dir", "type", "ext"]),
+              default=None,
+              help="Group staged changes and generate separate commits per group")
+@click.option("--install-alias", "install_alias", is_flag=True,
+              help="Install git aliases (git ci, git review, git squash)")
+@click.option("--uninstall-alias", "uninstall_alias", is_flag=True,
+              help="Remove aicommit git aliases")
+@click.option("--body-file", "body_file", default=None, metavar="FILE",
+              help="Read additional body content from file and append to commit message")
 def main(
     style, hint, dry_run, auto_yes, edit, scope, signoff, no_verify,
     last, amend, template_file, auto_stage, co_author, issue_ref, choose_mode,
@@ -134,6 +147,7 @@ def main(
     shell, copy, show_log, log_repo, log_style, output_file, hook_file,
     msg_template_name, msg_template_save, msg_template_list, msg_template_delete,
     editor_cmd_override,
+    retry_last, group_by, install_alias, uninstall_alias, body_file,
 ):
     """AI-powered git commit message generator.
 
@@ -193,6 +207,12 @@ def main(
         return
     if msg_template_delete:
         _run_template_delete(msg_template_delete)
+        return
+    if install_alias:
+        _run_install_alias()
+        return
+    if uninstall_alias:
+        _run_uninstall_alias()
         return
 
     # ── Sub-commands that need a git repo ────────────
@@ -258,10 +278,20 @@ def main(
         _run_last_mode(commit_style, language, hint, amend, signoff, no_verify, copy, output_file, msg_template_name)
         return
 
+    # Handle --retry (regenerate from last commit diff)
+    if retry_last:
+        _run_retry_mode(commit_style, language, hint, signoff, no_verify, copy, output_file, msg_template_name, editor_cmd_override)
+        return
+
     # Normal commit flow
     if not has_staged_changes():
         console.print("[yellow]ℹ No staged changes. Run `git add <files>` first, or use `-a` to auto-stage.[/yellow]")
         sys.exit(0)
+
+    # Handle --group-by: split staged changes and generate separate commits
+    if group_by:
+        _run_group_by_mode(group_by, commit_style, language, hint, signoff, no_verify, auto_yes, output_file)
+        return
 
     # Template
     custom_template = None
@@ -382,6 +412,17 @@ def main(
 
         if edit:
             final_msg = _edit_message(final_msg, editor_cmd_override)
+
+        # Append body from file
+        if body_file:
+            try:
+                body_content = Path(body_file).read_text(encoding="utf-8").strip()
+                if body_content:
+                    final_msg += f"\n\n{body_content}"
+                    console.print(f"[dim]📎 Appended body from {body_file}[/dim]")
+            except FileNotFoundError:
+                console.print(f"[red]✗ Body file not found: {body_file}[/red]")
+                sys.exit(1)
 
         # Add co-author trailers
         for author in co_author:
@@ -1183,9 +1224,11 @@ def _parse_commit_message(message: str, style: str) -> dict:
             result["description"] = header
     elif style == "emoji":
         # Parse: emoji description
-        m = re.match(r'^([^\w\s]\s*)(.*)$', header)
+        # Split at first whitespace: emoji (possibly multi-codepoint) + rest
+        # Works for single emoji (✨), ZWJ sequences (👨‍💻), flag sequences (🇨🇳)
+        m = re.match(r'^(\S+)\s+(.*)$', header)
         if m:
-            result["emoji"] = m.group(1).strip()
+            result["emoji"] = m.group(1)
             result["description"] = m.group(2).strip()
         else:
             result["description"] = header
@@ -1223,8 +1266,10 @@ def _apply_message_template(message: str, template_fmt: str, style: str, **extra
     result = template_fmt
     for key, val in vars_dict.items():
         result = result.replace(f"{{{key}}}", str(val) if val else "")
-    # Clean up double spaces from empty replacements
-    result = _re.sub(r'  +', ' ', result)
+    # Clean up empty parentheses, dangling colons, and extra spaces from empty replacements
+    result = _re.sub(r'\(\)', '', result)           # "type()" → "type"
+    result = _re.sub(r':\s*:', ':', result)         # ":: desc" → ": desc"
+    result = _re.sub(r'  +', ' ', result)           # collapse multiple spaces
     return result.strip()
 
 
@@ -1279,5 +1324,306 @@ def _run_template_delete(name: str):
         console.print(f"[yellow]⚠ Template '{name}' not found.[/yellow]")
 
 
+def _run_retry_mode(style: str, language: str, hint: str, signoff: bool, no_verify: bool,
+                    copy: bool, output_file: str = None, msg_template_name: str = None,
+                    editor_cmd: str = None):
+    """Retry: regenerate message for the last commit using its diff."""
+    config = load_config()
+    if not config["api"]["key"]:
+        console.print("[red]✗ No API key configured.[/red]")
+        sys.exit(1)
+
+    try:
+        diff_result = sp.run(
+            ["git", "diff", "HEAD~1", "--unified=3"],
+            capture_output=True, text=True,
+            creationflags=0x08000000,
+        )
+        if diff_result.returncode != 0:
+            console.print("[red]✗ Could not get last commit diff (need at least 2 commits).[/red]")
+            sys.exit(1)
+
+        diff_text = diff_result.stdout
+        diff_lines = diff_text.split("\n")
+        if len(diff_lines) > 300:
+            diff_text = "\n".join(diff_lines[:300]) + f"\n... ({len(diff_lines)-300} more lines)"
+
+        branch = get_branch_name()
+        branch_type = infer_type_from_branch(branch)
+
+        with show_generating() as progress:
+            task = progress.add_task("", total=None)
+            try:
+                result = generate_commit_message(
+                    diff=diff_text, style=style, language=language,
+                    hint=hint or "Improve this commit message",
+                    branch_hint=f"Branch: {branch}, type: {branch_type}" if branch_type else "",
+                    max_tokens_override=500,
+                )
+            except (GitErr, AIErr) as e:
+                progress.remove_task(task)
+                console.print(f"[red]✗ {e}[/red]")
+                sys.exit(1)
+            progress.remove_task(task)
+
+        console.print()
+
+        # Apply message template if specified
+        final_msg = result.message
+        if msg_template_name:
+            tmpl = get_message_template(msg_template_name)
+            if tmpl:
+                final_msg = _apply_message_template(final_msg, tmpl, style, branch=get_branch_name())
+                console.print(f"[dim]📋 Template '{msg_template_name}' applied[/dim]")
+            else:
+                console.print(f"[yellow]⚠ Template '{msg_template_name}' not found.[/yellow]")
+
+        console.print(
+            Panel(
+                final_msg,
+                title="[bold]🔄 Retried Message[/bold]",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+        console.print(
+            f"[dim]Model: {result.model} | "
+            f"Tokens: {result.tokens_in}→{result.tokens_out} | "
+            f"Time: {result.time_ms:.0f}ms[/dim]"
+        )
+
+        if copy:
+            _copy_to_clipboard(final_msg)
+        if output_file:
+            _save_to_file(final_msg, output_file)
+
+        # Auto-amend the last commit
+        ok = Confirm.ask("[bold]Amend last commit with this message?[/bold]", default=True)
+        if not ok:
+            console.print("[dim]Message generated but not applied. Use --copy or --output to save it.[/dim]")
+            return
+
+        amend_args = ["commit", "--amend", "-m", final_msg]
+        if signoff:
+            amend_args.append("--signoff")
+        if no_verify:
+            amend_args.append("--no-verify")
+        out = sp.run(
+            ["git"] + amend_args,
+            capture_output=True, text=True,
+            creationflags=0x08000000,
+        )
+        if out.returncode != 0:
+            console.print(f"[red]✗ git commit --amend failed:[/red]\n{out.stderr}")
+            sys.exit(1)
+        console.print(f"[green]{out.stdout.strip()}[/green]")
+
+        save_history({
+            "repo": get_repo_name(),
+            "branch": branch,
+            "style": style,
+            "message": final_msg,
+            "model": result.model,
+            "tokens_in": result.tokens_in,
+            "tokens_out": result.tokens_out,
+            "time_ms": result.time_ms,
+        })
+
+    except Exception as e:
+        console.print(f"[red]✗ {e}[/red]")
+        sys.exit(1)
+
+
+def _run_group_by_mode(group_by: str, style: str, language: str, hint: str,
+                      signoff: bool, no_verify: bool, auto_yes: bool,
+                      output_file: str = None):
+    """Group staged changes by dir/type/ext and generate separate commits per group."""
+    from collections import defaultdict
+    config = load_config()
+    if not config["api"]["key"]:
+        console.print("[red]✗ No API key configured.[/red]")
+        sys.exit(1)
+
+    files = get_staged_files()
+    if not files:
+        console.print("[yellow]ℹ No staged changes.[/yellow]")
+        sys.exit(0)
+
+    # Group files
+    groups = defaultdict(list)
+    for f in files:
+        p = Path(f)
+        if group_by == "dir":
+            key = p.parts[0] if len(p.parts) > 1 else "(root)"
+        elif group_by == "type":
+            # Infer type from file path/name
+            name_lower = p.name.lower()
+            if any(kw in name_lower for kw in ["test", "spec", ".test.", ".spec."]):
+                key = "test"
+            elif any(kw in str(p) for kw in ["doc", "readme", "changelog", ".md"]):
+                key = "docs"
+            elif any(kw in str(p) for kw in ["config", "settings", ".toml", ".yaml", ".json"]):
+                key = "config"
+            elif any(kw in str(p) for kw in ["style", ".css", ".scss", ".less"]):
+                key = "style"
+            else:
+                key = "src"
+        elif group_by == "ext":
+            key = p.suffix if p.suffix else "(no ext)"
+        else:
+            key = "(unknown)"
+        groups[key].append(f)
+
+    if len(groups) <= 1:
+        console.print(f"[yellow]ℹ Only 1 group found. Use regular aicommit instead of --group-by.[/yellow]")
+        sys.exit(0)
+
+    console.print(f"[bold]📂 Found {len(groups)} groups:[/bold]")
+    for key, group_files in sorted(groups.items()):
+        console.print(f"  [cyan]{key}[/cyan]: {', '.join(group_files)}")
+    console.print()
+
+    # Process each group
+    commit_style = style or config["commit"]["style"]
+    for key, group_files in sorted(groups.items()):
+        console.print(f"[bold cyan]── Group: {key} ({len(group_files)} files) ──[/bold cyan]")
+
+        # Get diff for just these files
+        diff = run_git(["diff", "--cached", "--unified=3", "--"] + group_files)
+        if not diff.strip():
+            console.print(f"  [dim]No meaningful diff, skipping[/dim]")
+            continue
+
+        # Limit diff size
+        diff_lines = diff.split("\n")
+        if len(diff_lines) > 200:
+            diff = "\n".join(diff_lines[:200]) + f"\n... ({len(diff_lines)-200} more lines)"
+
+        branch = get_branch_name()
+        branch_type = infer_type_from_branch(branch)
+
+        try:
+            with show_generating() as progress:
+                task = progress.add_task(f"Group: {key}", total=None)
+                result = generate_commit_message(
+                    diff=diff, style=commit_style, language=language,
+                    hint=hint or f"Changes in {key}",
+                    branch_hint=f"Branch: {branch}" if branch else "",
+                    file_list="\n".join(f"- {f}" for f in group_files),
+                    max_tokens_override=300,
+                )
+                progress.remove_task(task)
+        except (GitErr, AIErr) as e:
+            console.print(f"  [red]✗ Failed: {e}[/red]")
+            continue
+
+        console.print(
+            Panel(
+                result.message,
+                title=f"[bold]📦 {key}[/bold]",
+                border_style="green",
+                padding=(0, 1),
+            )
+        )
+
+        if not auto_yes:
+            ok = Confirm.ask(f"[bold]Commit group '{key}'?[/bold]", default=True)
+            if not ok:
+                console.print(f"  [dim]Skipping {key}[/dim]")
+                continue
+
+        # Commit just these files
+        commit_args = ["commit", "-m", result.message, "--"] + group_files
+        if signoff:
+            commit_args.insert(1, "--signoff")
+        if no_verify:
+            commit_args.insert(1, "--no-verify")
+
+        # First unstage everything, then stage only this group
+        sp.run(["git", "reset", "HEAD", "--"], capture_output=True, creationflags=0x08000000)
+        sp.run(["git", "add", "--"] + group_files, capture_output=True, creationflags=0x08000000)
+
+        out = sp.run(
+            ["git"] + commit_args,
+            capture_output=True, text=True,
+            creationflags=0x08000000,
+        )
+        if out.returncode != 0:
+            console.print(f"  [red]✗ Commit failed: {out.stderr}[/red]")
+            # Re-stage everything on failure
+            sp.run(["git", "add", "-A"], capture_output=True, creationflags=0x08000000)
+            continue
+        console.print(f"  [green]✓ Committed {key}[/green]")
+
+        save_history({
+            "repo": get_repo_name(),
+            "branch": branch,
+            "style": commit_style,
+            "message": result.message,
+            "model": result.model,
+            "tokens_in": result.tokens_in,
+            "tokens_out": result.tokens_out,
+            "time_ms": result.time_ms,
+        })
+
+    # Re-stage any remaining files
+    remaining = sp.run(
+        ["git", "diff", "--cached", "--name-only"],
+        capture_output=True, text=True,
+        creationflags=0x08000000,
+    )
+    if not remaining.stdout.strip():
+        console.print("\n[green]✓ All groups committed successfully.[/green]")
+    else:
+        console.print("\n[yellow]⚠ Some files remain staged. Run `aicommit` again or `git reset`.[/yellow]")
+
+
+def _run_install_alias():
+    """Install convenient git aliases for aicommit."""
+    aliases = {
+        "ci": "aicommit",
+        "review": "aicommit --review",
+        "squash": "aicommit --squash",
+        "pr": "aicommit --pr",
+        "changelog": "aicommit --changelog",
+    }
+
+    console.print(Panel(
+        "[bold]🔧 Installing git aliases[/bold]\n\n"
+        "This adds convenient shortcuts like `git ci` for `aicommit`.",
+        border_style="cyan",
+    ))
+
+    installed = 0
+    for alias, command in aliases.items():
+        try:
+            sp.run(
+                ["git", "config", "--global", f"alias.{alias}", command],
+                capture_output=True, text=True,
+                creationflags=0x08000000,
+            )
+            console.print(f"  [green]✓[/green] git {alias} → {command}")
+            installed += 1
+        except Exception as e:
+            console.print(f"  [red]✗ Failed to install 'git {alias}': {e}[/red]")
+
+    if installed:
+        console.print(f"\n[green]✓ {installed} aliases installed. Try: [bold]git ci[/bold][/green]")
+    else:
+        console.print("[red]✗ No aliases were installed.[/red]")
+
+
+def _run_uninstall_alias():
+    """Remove aicommit git aliases."""
+    aliases = ["ci", "review", "squash", "pr", "changelog"]
+    for alias in aliases:
+        sp.run(
+            ["git", "config", "--global", "--unset", f"alias.{alias}"],
+            capture_output=True, creationflags=0x08000000,
+        )
+    console.print("[green]✓ aicommit git aliases removed.[/green]")
+
+
 if __name__ == "__main__":
     main()
+

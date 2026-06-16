@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.7.0"
+        assert aicommit.__version__ == "1.8.0"
 
 
 class TestConfig:
@@ -465,6 +465,20 @@ class TestParseCommitMessage:
         assert result["emoji"] == "✨"
         assert result["description"] == "Add new feature"
 
+    def test_parse_emoji_multi_codepoint(self):
+        from aicommit.cli import _parse_commit_message
+        # ZWJ sequence
+        result = _parse_commit_message("👨‍💻 Refactor codebase", "emoji")
+        assert result["emoji"] == "👨‍💻"
+        assert result["description"] == "Refactor codebase"
+
+    def test_parse_emoji_flag(self):
+        from aicommit.cli import _parse_commit_message
+        # Flag sequence
+        result = _parse_commit_message("🇨🇳 Add Chinese i18n", "emoji")
+        assert result["emoji"] == "🇨🇳"
+        assert result["description"] == "Add Chinese i18n"
+
     def test_parse_simple(self):
         from aicommit.cli import _parse_commit_message
         result = _parse_commit_message("Fix crash on startup\n\nRoot cause was null pointer.", "simple")
@@ -497,8 +511,25 @@ class TestApplyMessageTemplate:
     def test_template_empty_vars_cleaned(self):
         from aicommit.cli import _apply_message_template
         msg = "Add feature"
-        tmpl = "{type}{scope}: {description}"
+        tmpl = "{type}({scope}): {description}"
         result = _apply_message_template(msg, tmpl, "simple")
+        # Empty scope → "()" removed → ": Add feature"
+        assert result == ": Add feature"
+
+    def test_template_empty_parens_cleaned(self):
+        from aicommit.cli import _apply_message_template
+        msg = "feat: add feature"
+        tmpl = "{type}({scope}): {description}"
+        result = _apply_message_template(msg, tmpl, "conventional")
+        # scope is empty, () should be removed
+        assert result == "feat: add feature"
+
+    def test_template_double_colon_cleaned(self):
+        from aicommit.cli import _apply_message_template
+        msg = "Add feature"
+        tmpl = "{type}:: {description}"
+        result = _apply_message_template(msg, tmpl, "simple")
+        # type is empty, "::" → ":"
         assert result == ": Add feature"
 
 
@@ -565,3 +596,68 @@ class TestEditorCmdOverride:
         src = inspect.getsource(_edit_message)
         assert "shlex.split" in src
         assert "[*shlex.split(editor), tmp_path]" in src
+
+
+class TestRetryMode:
+    """Tests for --retry functionality."""
+
+    def test_retry_mode_exists(self):
+        from aicommit.cli import _run_retry_mode
+        assert callable(_run_retry_mode)
+
+    def test_retry_mode_signature(self):
+        import inspect
+        from aicommit.cli import _run_retry_mode
+        sig = inspect.signature(_run_retry_mode)
+        params = list(sig.parameters.keys())
+        assert "style" in params
+        assert "language" in params
+        assert "hint" in params
+
+
+class TestGroupByMode:
+    """Tests for --group-by functionality."""
+
+    def test_group_by_mode_exists(self):
+        from aicommit.cli import _run_group_by_mode
+        assert callable(_run_group_by_mode)
+
+    def test_group_by_mode_signature(self):
+        import inspect
+        from aicommit.cli import _run_group_by_mode
+        sig = inspect.signature(_run_group_by_mode)
+        params = list(sig.parameters.keys())
+        assert "group_by" in params
+        assert "style" in params
+
+    def test_group_by_choices(self):
+        """Verify --group-by accepts only dir/type/ext."""
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--group-by", "invalid"])
+        assert result.exit_code != 0
+        assert "Invalid value" in result.output or "invalid" in result.output.lower()
+
+
+class TestInstallAlias:
+    """Tests for --install-alias functionality."""
+
+    def test_install_alias_mode_exists(self):
+        from aicommit.cli import _run_install_alias
+        assert callable(_run_install_alias)
+
+    def test_uninstall_alias_mode_exists(self):
+        from aicommit.cli import _run_uninstall_alias
+        assert callable(_run_uninstall_alias)
+
+
+class TestBodyFile:
+    """Tests for --body-file functionality."""
+
+    def test_body_file_option_in_help(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert "--body-file" in result.output

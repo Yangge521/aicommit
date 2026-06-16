@@ -2,10 +2,10 @@
 
 > 🚀 **AI writes your git commit messages. You ship code.**
 
-[![PyPI](https://img.shields.io/badge/pypi-v1.7.0-blue)](https://pypi.org/project/aicommit/)
+[![PyPI](https://img.shields.io/badge/pypi-v1.8.0-blue)](https://pypi.org/project/aicommit/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-70%20passed-brightgreen)](.)
+[![Tests](https://img.shields.io/badge/tests-85%20passed-brightgreen)](.)
 
 Stop staring at your terminal wondering what commit message to write. **aicommit** reads your staged changes, understands your code, and generates the perfect commit message — in any style you want.
 
@@ -28,6 +28,12 @@ Stop staring at your terminal wondering what commit message to write. **aicommit
 - 🔄 **AI Retry** — Exponential backoff on API failures
 - 🔌 **Provider Override** — Switch AI provider at runtime (`--provider`)
 - 💾 **Save Output** — Save generated messages to file (`--output`/`-o`)
+- 🔄 **Retry** — Regenerate last commit message with `--retry`
+- 📂 **Group By** — Split large changes into multiple commits (`--group-by dir/type/ext`)
+- 🔧 **Git Aliases** — Install shortcuts like `git ci` (`--install-alias`)
+- 📎 **Body File** — Append body content from file (`--body-file`)
+- 📋 **Message Templates** — Custom commit message format templates
+- ✏️ **Editor Override** — Custom editor command (`--editor-cmd`)
 - 📊 **Enhanced Stats** — Per-repo, per-model breakdown with date range
 - 🔍 **Log Filtering** — Filter history by repo or style (`--log-repo`, `--log-style`)
 - 📋 **Message Templates** — Save/apply named message format templates (`--msg-template`)
@@ -437,6 +443,16 @@ pytest
 ### v1.0.0
 
 - 🚀 Initial release with DeepSeek API support
+
+### v1.8.0
+
+- 🔄 `--retry` Regenerate last commit message with better AI prompt
+- 📂 `--group-by dir/type/ext` Split staged changes into grouped commits
+- 🔧 `--install-alias` / `--uninstall-alias` Install/remove git shortcuts (git ci, git review, git squash, git pr, git changelog)
+- 📎 `--body-file FILE` Append body content from file to commit message
+- 🧹 Empty template variable cleanup (removes dangling parens/colons)
+- 👨‍💻 Multi-codepoint emoji support in message template parsing
+- 🐛 Fix `--editor-cmd` with spaces (e.g., `code --wait`)
 
 ## 📝 License
 
