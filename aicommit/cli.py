@@ -134,6 +134,12 @@ from .render import console, show_diff_summary, show_generating
               help="Remove aicommit git aliases")
 @click.option("--body-file", "body_file", default=None, metavar="FILE",
               help="Read additional body content from file and append to commit message")
+@click.option("--push", "auto_push", is_flag=True,
+              help="Push to remote after committing")
+@click.option("--language", "language_override", default=None,
+              help="Override output language for this run (e.g. en, zh, ja)")
+@click.option("--emoji-pair", "emoji_pair", is_flag=True,
+              help="Use conventional format with emoji prefix (e.g. ✨ feat: add feature)")
 def main(
     style, hint, dry_run, auto_yes, edit, scope, signoff, no_verify,
     last, amend, template_file, auto_stage, co_author, issue_ref, choose_mode,
@@ -148,6 +154,7 @@ def main(
     msg_template_name, msg_template_save, msg_template_list, msg_template_delete,
     editor_cmd_override,
     retry_last, group_by, install_alias, uninstall_alias, body_file,
+    auto_push, language_override, emoji_pair,
 ):
     """AI-powered git commit message generator.
 
@@ -271,7 +278,7 @@ def main(
         config = load_config()
 
     commit_style = style or config["commit"]["style"]
-    language = config["commit"]["language"]
+    language = language_override or config["commit"]["language"]
 
     # Handle --last (generate message for existing commit)
     if last:
@@ -393,6 +400,13 @@ def main(
         # Edit
         final_msg = result.message
 
+        # Apply emoji-pair mode: prepend emoji to conventional message
+        if emoji_pair and commit_style == "conventional":
+            from .conventional import parse_conventional, EMOJI_MAP
+            parsed = parse_conventional(final_msg)
+            if parsed and parsed["type"] in EMOJI_MAP:
+                final_msg = f"{EMOJI_MAP[parsed['type']]} {final_msg}"
+
         # Apply message template if specified
         if msg_template_name:
             tmpl = get_message_template(msg_template_name)
@@ -460,6 +474,18 @@ def main(
                 "tokens_out": result.tokens_out,
                 "time_ms": result.time_ms,
             })
+
+            # Auto-push if requested
+            if auto_push:
+                push_out = sp.run(
+                    ["git", "push"],
+                    capture_output=True, text=True,
+                    creationflags=0x08000000,
+                )
+                if push_out.returncode != 0:
+                    console.print(f"[yellow]⚠ git push failed:[/yellow]\n{push_out.stderr}")
+                else:
+                    console.print(f"[green]✓ Pushed to remote[/green]")
         except Exception as e:
             console.print(f"[red]✗ {e}[/red]")
             sys.exit(1)
@@ -524,6 +550,7 @@ def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: b
                     diff=diff_text, style=style, language=language,
                     hint=hint or "Rewrite commit message for these changes",
                     branch_hint=f"Branch: {branch}, type: {branch_type}" if branch_type else "",
+                    file_list="",
                     max_tokens_override=500,
                 )
             except (GitErr, AIErr) as e:
@@ -598,7 +625,7 @@ def _run_pr_mode(base_branch: str, hint: str, output_file: str = None):
             console.print("[red]✗ API key required.[/red]")
             sys.exit(1)
 
-    language = config["commit"]["language"]
+    language = language_override or config["commit"]["language"]
 
     with show_generating() as progress:
         task = progress.add_task("", total=None)
@@ -632,7 +659,7 @@ def _run_squash_mode(num_commits: int, style: str, hint: str, output_file: str =
 
     config = load_config()
     commit_style = style or config["commit"]["style"]
-    language = config["commit"]["language"]
+    language = language or config["commit"]["language"]
 
     with show_generating() as progress:
         task = progress.add_task("", total=None)
@@ -665,7 +692,7 @@ def _run_changelog_mode(version: str, hint: str, output_file: str = None):
         sys.exit(1)
 
     config = load_config()
-    language = config["commit"]["language"]
+    language = language or config["commit"]["language"]
 
     with show_generating() as progress:
         task = progress.add_task("", total=None)
@@ -937,6 +964,7 @@ def _run_hook_mode(commit_msg_file: str):
             diff=diff,
             style=config["commit"]["style"],
             language=config["commit"]["language"],
+            file_list="\n".join(f"- {f}" for f in get_staged_files()),
         )
 
         # Write the message to the commit file
@@ -973,7 +1001,7 @@ def _choose_commit_message(**kwargs) -> AIResult:
                     hint=kwargs.get("hint"),
                     branch_hint=kwargs.get("branch_hint") or "",
                     breaking_hint=kwargs.get("breaking_hint") or "",
-                    file_list=kwargs.get("files"),
+                    file_list="\n".join(f"- {f}" for f in (kwargs.get("files") or [])),
                     template=kwargs.get("custom_template"),
                     max_tokens_override=kwargs.get("max_tokens_override"),
                     temperature_override=kwargs.get("temperature_override", 0.3) + i * 0.1,
@@ -1377,6 +1405,7 @@ def _run_retry_mode(style: str, language: str, hint: str, signoff: bool, no_veri
                     diff=diff_text, style=style, language=language,
                     hint=hint or "Improve this commit message",
                     branch_hint=f"Branch: {branch}, type: {branch_type}" if branch_type else "",
+                    file_list="",
                     max_tokens_override=500,
                 )
             except (GitErr, AIErr) as e:

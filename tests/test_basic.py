@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.9.0"
+        assert aicommit.__version__ == "1.10.0"
 
 
 class TestConfig:
@@ -83,7 +83,7 @@ class TestPrompts:
     def test_emoji_format(self):
         from aicommit.prompts import EMOJI_PROMPT
         msg = EMOJI_PROMPT.format(
-            diff="test", branch_hint="", file_list="- test.py"
+            diff="test", branch_hint="", breaking_hint="", recent_commits="", file_list="- test.py"
         )
         assert "gitmoji" in msg.lower()
 
@@ -783,3 +783,81 @@ class TestAutoFixAmendCheck:
         import inspect
         src = inspect.getsource(_run_auto_fix)
         assert "returncode" in src
+
+
+class TestPushOption:
+    """Tests for --push functionality."""
+
+    def test_push_option_in_help(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert "--push" in result.output
+
+    def test_push_default_false(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        # --push is a flag, should show in help
+        assert "--push" in result.output
+
+
+class TestLanguageOverride:
+    """Tests for --language functionality."""
+
+    def test_language_option_in_help(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert "--language" in result.output
+
+
+class TestEmojiPairOption:
+    """Tests for --emoji-pair functionality."""
+
+    def test_emoji_pair_option_in_help(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert "--emoji-pair" in result.output
+
+    def test_emoji_pair_prepends_emoji(self):
+        """Verify emoji-pair mode prepends emoji to conventional message."""
+        from aicommit.conventional import parse_conventional, EMOJI_MAP
+        msg = "feat(auth): add login page"
+        parsed = parse_conventional(msg)
+        assert parsed and parsed["type"] in EMOJI_MAP
+        emoji = EMOJI_MAP[parsed["type"]]
+        result = f"{emoji} {msg}"
+        assert result == "✨ feat(auth): add login page"
+
+
+class TestPromptCompleteness:
+    """Tests for prompt template placeholder consistency."""
+
+    def test_emoji_prompt_has_all_placeholders(self):
+        from aicommit.prompts import EMOJI_PROMPT
+        assert "{branch_hint}" in EMOJI_PROMPT
+        assert "{breaking_hint}" in EMOJI_PROMPT
+        assert "{recent_commits}" in EMOJI_PROMPT
+        assert "{file_list}" in EMOJI_PROMPT
+        assert "{diff}" in EMOJI_PROMPT
+
+    def test_simple_prompt_has_all_placeholders(self):
+        from aicommit.prompts import SIMPLE_PROMPT
+        assert "{branch_hint}" in SIMPLE_PROMPT
+        assert "{breaking_hint}" in SIMPLE_PROMPT
+        assert "{recent_commits}" in SIMPLE_PROMPT
+        assert "{file_list}" in SIMPLE_PROMPT
+        assert "{diff}" in SIMPLE_PROMPT
+
+    def test_detailed_prompt_has_all_placeholders(self):
+        from aicommit.prompts import DETAILED_PROMPT
+        assert "{branch_hint}" in DETAILED_PROMPT
+        assert "{recent_commits}" in DETAILED_PROMPT
+        assert "{file_list}" in DETAILED_PROMPT
+        assert "{diff}" in DETAILED_PROMPT

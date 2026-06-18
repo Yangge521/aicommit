@@ -72,6 +72,8 @@ Common emojis:
 
 Pick the most appropriate emoji. Description should be short and clear.
 {branch_hint}
+{breaking_hint}
+{recent_commits}
 
 File paths changed:
 {file_list}
@@ -86,6 +88,7 @@ SIMPLE_PROMPT = """Generate a short, clear commit message for these staged chang
 Keep it under 72 characters. Use imperative mood. One line only.
 {recent_commits}
 {branch_hint}
+{breaking_hint}
 
 File paths changed:
 {file_list}

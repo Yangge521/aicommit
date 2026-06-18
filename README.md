@@ -2,10 +2,10 @@
 
 > 🚀 **AI writes your git commit messages. You ship code.**
 
-[![PyPI](https://img.shields.io/badge/pypi-v1.8.0-blue)](https://pypi.org/project/aicommit/)
+[![PyPI](https://img.shields.io/badge/pypi-v1.10.0-blue)](https://pypi.org/project/aicommit/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-85%20passed-brightgreen)](.)
+[![Tests](https://img.shields.io/badge/tests-107%20passed-brightgreen)](.)
 
 Stop staring at your terminal wondering what commit message to write. **aicommit** reads your staged changes, understands your code, and generates the perfect commit message — in any style you want.
 
@@ -34,6 +34,9 @@ Stop staring at your terminal wondering what commit message to write. **aicommit
 - 📎 **Body File** — Append body content from file (`--body-file`)
 - 📋 **Message Templates** — Custom commit message format templates
 - ✏️ **Editor Override** — Custom editor command (`--editor-cmd`)
+- 🚀 **Auto Push** — Push to remote after committing (`--push`)
+- 🌐 **Language Override** — Switch output language at runtime (`--language`)
+- 🎨 **Emoji Pair** — Conventional + emoji hybrid mode (`--emoji-pair`)
 - 📊 **Enhanced Stats** — Per-repo, per-model breakdown with date range
 - 🔍 **Log Filtering** — Filter history by repo or style (`--log-repo`, `--log-style`)
 - 📋 **Message Templates** — Save/apply named message format templates (`--msg-template`)
@@ -443,6 +446,14 @@ pytest
 ### v1.0.0
 
 - 🚀 Initial release with DeepSeek API support
+
+### v1.10.0
+
+- 🚀 `--push` Auto-push to remote after committing
+- 🌐 `--language` Override output language at runtime (e.g. `--language zh`)
+- 🎨 `--emoji-pair` Conventional + emoji hybrid mode (e.g. `✨ feat: add feature`)
+- 🐛 Fix `file_list` passed as list instead of string in `--last`, `--retry`, `--hook`, `--choose` modes
+- 🐛 Fix emoji/simple prompts missing `{breaking_hint}` and `{recent_commits}` placeholders
 
 ### v1.8.0
 
