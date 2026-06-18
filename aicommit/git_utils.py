@@ -140,6 +140,140 @@ def get_staged_diff(max_lines: int = 200, skip_noise: bool = True) -> str:
     return full_diff
 
 
+# ── Diff Chunking for Large Diffs ────────────────────
+
+CHUNK_THRESHOLD = 400  # lines; diffs above this get chunked
+CHUNK_MAX_LINES = 300   # max lines per chunk sent to AI
+
+
+def chunk_diff(diff: str, threshold: int = CHUNK_THRESHOLD) -> list[dict]:
+    """Split a large diff into per-file chunks for context-aware processing.
+
+    Returns a list of dicts:
+        [{"file": "src/auth.ts", "diff": "...", "lines": 42}, ...]
+
+    If the diff is below the threshold, returns a single chunk with file="*".
+    """
+    total_lines = diff.count("\n") + 1
+    if total_lines <= threshold:
+        return [{"file": "*", "diff": diff, "lines": total_lines}]
+
+    chunks = []
+    current_file = None
+    current_lines: list[str] = []
+
+    for line in diff.split("\n"):
+        # Detect file header: "diff --git a/path b/path" or "+++ b/path"
+        if line.startswith("diff --git "):
+            # Flush previous chunk
+            if current_file and current_lines:
+                chunk_text = "\n".join(current_lines)
+                if chunk_text.strip():
+                    chunks.append({
+                        "file": current_file,
+                        "diff": chunk_text,
+                        "lines": len(current_lines),
+                    })
+            # Extract file path from "diff --git a/path b/path"
+            parts = line.split(" b/")
+            if len(parts) >= 2:
+                current_file = parts[-1].strip()
+            else:
+                current_file = line
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+
+    # Flush last chunk
+    if current_file and current_lines:
+        chunk_text = "\n".join(current_lines)
+        if chunk_text.strip():
+            chunks.append({
+                "file": current_file,
+                "diff": chunk_text,
+                "lines": len(current_lines),
+            })
+
+    # Merge tiny chunks (<30 lines) into the previous chunk
+    merged = []
+    for chunk in chunks:
+        if merged and chunk["lines"] < 30:
+            prev = merged[-1]
+            prev["diff"] += "\n" + chunk["diff"]
+            prev["lines"] += chunk["lines"]
+            prev["file"] = prev["file"] + ", " + chunk["file"]
+        else:
+            merged.append(chunk)
+
+    # Split chunks that are still too large
+    final = []
+    for chunk in merged:
+        if chunk["lines"] <= CHUNK_MAX_LINES:
+            final.append(chunk)
+        else:
+            # Split by hunk boundaries (@@ ... @@)
+            sub_lines = chunk["diff"].split("\n")
+            sub_chunks: list[list[str]] = []
+            current: list[str] = []
+            for sl in sub_lines:
+                if sl.startswith("@@") and current:
+                    sub_chunks.append(current)
+                    current = [sl]
+                else:
+                    current.append(sl)
+            if current:
+                sub_chunks.append(current)
+
+            for sc in sub_chunks:
+                sc_text = "\n".join(sc)
+                if sc_text.strip():
+                    final.append({
+                        "file": chunk["file"],
+                        "diff": sc_text,
+                        "lines": len(sc),
+                    })
+
+    return final
+
+
+def get_chunked_diff(skip_noise: bool = True) -> tuple[str, list[dict]]:
+    """Get the staged diff plus per-file chunks for large diffs.
+
+    Returns:
+        (summary_diff, chunks) where summary_diff is the stat+truncated diff
+        and chunks is a list of per-file diff segments.
+    """
+    all_files = get_staged_files()
+
+    if skip_noise:
+        patterns = load_aicommitignore()
+        meaningful = [
+            f for f in all_files
+            if not is_noise_file(f) and not match_aicommitignore(f, patterns)
+        ]
+    else:
+        meaningful = list(all_files)
+
+    if not meaningful:
+        meaningful = list(all_files)
+
+    stat = run_git(["diff", "--cached", "--stat", "--"] + meaningful)
+    diff = run_git(["diff", "--cached", "--unified=3", "--"] + meaningful)
+
+    chunks = chunk_diff(diff)
+
+    # Build summary: stat + truncated diff
+    total_lines = diff.count("\n") + 1
+    if total_lines > 500:
+        diff_summary = "\n".join(diff.split("\n")[:200])
+        diff_summary += f"\n\n... ({total_lines - 200} more diff lines, see chunks for detail)"
+    else:
+        diff_summary = diff
+
+    full_diff = stat + "\n\n" + diff_summary
+    return full_diff, chunks
+
+
 def get_staged_files() -> list[str]:
     """Get list of staged files."""
     result = run_git(["diff", "--cached", "--name-only"])
@@ -445,3 +579,91 @@ def detect_monorepo_package(files: list[str]) -> Optional[str]:
     if len(packages) == 1:
         return packages.pop()
     return None
+
+
+# ── Interactive Rebase Support ───────────────────────
+
+def get_commits_in_range(base: str, head: str = "HEAD") -> list[dict]:
+    """Get commit list between base and head for rebase planning.
+
+    Returns list of dicts:
+        [{"hash": "abc1234", "subject": "fix: ...", "author": "...", "date": "..."}, ...]
+    """
+    fmt = "%H%x1f%s%x1f%an%x1f%ad"
+    result = run_git(["log", "--reverse", f"--format={fmt}", f"{base}..{head}"])
+    commits = []
+    for line in result.split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split("\x1f")
+        if len(parts) >= 4:
+            commits.append({
+                "hash": parts[0],
+                "subject": parts[1],
+                "author": parts[2],
+                "date": parts[3],
+            })
+    return commits
+
+
+def get_commit_diff(commit_hash: str, max_lines: int = 300) -> str:
+    """Get the diff introduced by a specific commit.
+
+    For merge commits, uses `git show`. For regular commits,
+    uses the diff against the parent.
+    """
+    try:
+        stat = run_git(["show", "--stat", commit_hash])
+        diff = run_git(["show", "--unified=3", commit_hash])
+    except GitError:
+        raise GitError(f"Could not get diff for commit {commit_hash}")
+
+    full_diff = stat + "\n\n" + diff
+    lines = full_diff.split("\n")
+    if len(lines) > max_lines:
+        full_diff = "\n".join(lines[:max_lines])
+        full_diff += f"\n\n... (truncated, {len(lines) - max_lines} more lines)"
+    return full_diff
+
+
+def get_commit_files(commit_hash: str) -> list[str]:
+    """Get list of files changed in a specific commit."""
+    result = run_git(["show", "--name-only", "--format=", commit_hash])
+    return [f for f in result.split("\n") if f.strip()]
+
+
+def reword_commit(commit_hash: str, new_message: str, signoff: bool = False, no_verify: bool = False) -> bool:
+    """Reword a specific commit during an interactive rebase.
+
+    Uses `git rebase --exec` approach with a temporary file.
+    """
+    import tempfile
+
+    # Write the new message to a temp file
+    fd, tmp_path = tempfile.mkstemp(suffix=".txt", prefix="aicommit_reword_", text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(new_message)
+
+        # Use git rebase to reword the specific commit
+        # We use the sequence editor approach
+        seq_script = f"exec git commit --amend -F {tmp_path}"
+        if signoff:
+            seq_script += " --signoff"
+        if no_verify:
+            seq_script += " --no-verify"
+
+        result = subprocess.run(
+            ["git", "rebase", commit_hash + "^", "--exec", seq_script],
+            capture_output=True, text=True,
+            creationflags=0x08000000 if platform.system() == "Windows" else 0,
+        )
+        return result.returncode == 0
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+import os  # needed by reword_commit

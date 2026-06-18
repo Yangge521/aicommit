@@ -38,6 +38,9 @@ from .git_utils import (
     detect_monorepo_package,
     detect_scope,
     get_branch_name,
+    get_commit_diff,
+    get_commit_files,
+    get_commits_in_range,
     get_last_commit_message,
     get_repo_name,
     get_staged_diff,
@@ -140,6 +143,12 @@ from .render import console, show_diff_summary, show_generating
               help="Override output language for this run (e.g. en, zh, ja)")
 @click.option("--emoji-pair", "emoji_pair", is_flag=True,
               help="Use conventional format with emoji prefix (e.g. ✨ feat: add feature)")
+@click.option("--rebase", "rebase_mode", is_flag=True,
+              help="Interactive rebase: regenerate messages for commits since base")
+@click.option("--rebase-base", default=None, metavar="BRANCH",
+              help="Base branch/commit for --rebase (default: auto-detect from remote)")
+@click.option("--rebase-all", is_flag=True,
+              help="With --rebase: reword ALL commits without prompting")
 def main(
     style, hint, dry_run, auto_yes, edit, scope, signoff, no_verify,
     last, amend, template_file, auto_stage, co_author, issue_ref, choose_mode,
@@ -155,6 +164,7 @@ def main(
     editor_cmd_override,
     retry_last, group_by, install_alias, uninstall_alias, body_file,
     auto_push, language_override, emoji_pair,
+    rebase_mode, rebase_base, rebase_all,
 ):
     """AI-powered git commit message generator.
 
@@ -246,6 +256,11 @@ def main(
         return
     if auto_fix:
         _run_auto_fix()
+        return
+
+    # ── Interactive Rebase ───────────────────────────
+    if rebase_mode:
+        _run_rebase_mode(rebase_base, rebase_all, style, language_override, hint, auto_yes)
         return
 
     # ── Commit generation ───────────────────────────
@@ -1684,6 +1699,244 @@ def _run_uninstall_alias():
             capture_output=True, creationflags=0x08000000,
         )
     console.print("[green]✓ aicommit git aliases removed.[/green]")
+
+
+def _run_rebase_mode(base: str, reword_all: bool, style: str, language_override: str, hint: str, auto_yes: bool):
+    """Interactive rebase: regenerate commit messages for a range of commits.
+
+    Flow:
+    1. Determine base (auto-detect from remote tracking branch if not given).
+    2. List commits from base..HEAD.
+    3. For each commit, show current message and generate a new one.
+    4. User picks which commits to reword (or --rebase-all for all).
+    5. Apply reworded messages via sequential `git rebase -i`.
+    """
+    if not is_git_repo():
+        console.print("[red]✗ Not a git repository.[/red]")
+        sys.exit(1)
+
+    config = load_config()
+    if not config["api"]["key"]:
+        console.print("[yellow]⚠ First time? Let's set up your AI provider.[/yellow]")
+        config = setup_wizard()
+        if not config["api"]["key"]:
+            console.print("[red]✗ API key required.[/red]")
+            sys.exit(1)
+
+    # Determine base commit
+    if base:
+        base_ref = base
+    else:
+        # Auto-detect from remote tracking branch
+        try:
+            upstream = run_git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+            base_ref = upstream if upstream else None
+        except GitErr:
+            base_ref = None
+
+        if not base_ref:
+            # Fallback: use origin/main or origin/master
+            for candidate in ["origin/main", "origin/master", "main", "master"]:
+                try:
+                    run_git(["rev-parse", "--verify", candidate])
+                    base_ref = candidate
+                    break
+                except GitErr:
+                    continue
+
+        if not base_ref:
+            console.print("[red]✗ Could not determine base. Use --rebase-base BRANCH.[/red]")
+            sys.exit(1)
+
+    # Get commits in range
+    try:
+        commits = get_commits_in_range(base_ref)
+    except GitErr as e:
+        console.print(f"[red]✗ Failed to get commits: {e}[/red]")
+        sys.exit(1)
+
+    if not commits:
+        console.print(f"[yellow]ℹ No commits between {base_ref} and HEAD.[/yellow]")
+        return
+
+    commit_style = style or config["commit"]["style"]
+    language = language_override or config["commit"]["language"]
+
+    # Show commits
+    console.print()
+    console.print(f"[bold]🔄 Interactive Rebase: {base_ref}..HEAD[/bold]")
+    console.print(f"[dim]{len(commits)} commits to review[/dim]\n")
+
+    for i, c in enumerate(commits, 1):
+        console.print(f"  [bold cyan]{i}.[/bold cyan] [dim]{c['hash'][:8]}[/dim] {c['subject']}")
+    console.print()
+
+    # Determine which commits to reword
+    if reword_all:
+        to_reword = list(range(len(commits)))
+    else:
+        to_reword = []
+        for i, c in enumerate(commits):
+            if auto_yes:
+                to_reword.append(i)
+                continue
+            ok = Confirm.ask(f"Reword commit {i+1}? ({c['subject'][:50]})", default=False)
+            if ok:
+                to_reword.append(i)
+
+    if not to_reword:
+        console.print("[dim]No commits selected. Exiting.[/dim]")
+        return
+
+    console.print(f"\n[bold]Rewording {len(to_reword)} commits...[/bold]\n")
+
+    # Generate new messages for each selected commit
+    reworded: list[tuple[int, str]] = []  # (commit_index, new_message)
+    for idx in to_reword:
+        c = commits[idx]
+        console.print(f"[bold cyan]── Commit {idx+1}/{len(commits)}: {c['hash'][:8]} ──[/bold cyan]")
+        console.print(f"  [dim]Old:[/dim] {c['subject']}")
+
+        try:
+            diff = get_commit_diff(c["hash"])
+            files = get_commit_files(c["hash"])
+            branch_type = infer_type_from_branch(get_branch_name())
+            breaking = detect_breaking_changes(diff)
+
+            with show_generating() as progress:
+                task = progress.add_task("Generating...", total=None)
+                try:
+                    result = generate_commit_message(
+                        diff=diff, style=commit_style, language=language,
+                        hint=hint or f"Reword commit: {c['subject']}",
+                        branch_hint=f"Branch: {get_branch_name()}, type: {branch_type}" if branch_type else "",
+                        breaking_hint="BREAKING CHANGE DETECTED" if breaking else "",
+                        file_list="\n".join(f"- {f}" for f in files),
+                        max_tokens_override=500,
+                    )
+                except (GitErr, AIErr) as e:
+                    progress.remove_task(task)
+                    console.print(f"  [red]✗ Failed: {e}[/red]")
+                    continue
+                progress.remove_task(task)
+
+            console.print(f"  [green]New:[/green] {result.message}")
+            console.print(f"  [dim]Model: {result.model} | Tokens: {result.tokens_in}→{result.tokens_out} | {result.time_ms:.0f}ms[/dim]")
+
+            if not auto_yes and not reword_all:
+                ok = Confirm.ask("  Use this message?", default=True)
+                if not ok:
+                    console.print("  [dim]Skipped.[/dim]")
+                    continue
+
+            reworded.append((idx, result.message))
+            console.print()
+
+        except GitErr as e:
+            console.print(f"  [red]✗ {e}[/red]")
+            continue
+
+    if not reworded:
+        console.print("[yellow]No commits were reworded.[/yellow]")
+        return
+
+    # Apply reworded messages via sequential git rebase
+    # Strategy: use GIT_SEQUENCE_EDITOR + GIT_EDITOR to reword each commit
+    console.print(f"[bold]Applying {len(reworded)} reworded messages...[/bold]\n")
+
+    import tempfile
+    import stat as stat_mod
+
+    success_count = 0
+    fail_count = 0
+
+    # Process in reverse order (oldest commit first) to avoid hash changes affecting later commits
+    for idx, new_msg in reversed(reworded):
+        c = commits[idx]
+        short_hash = c["hash"][:7]
+
+        # Write the new message to a temp file
+        msg_fd, msg_path = tempfile.mkstemp(suffix=".txt", prefix="aicommit_reword_", text=True)
+        try:
+            with os.fdopen(msg_fd, "w", encoding="utf-8") as f:
+                f.write(new_msg)
+
+            # Create a GIT_EDITOR that replaces the message with our file content
+            if platform.system() == "Windows":
+                # Windows: batch script that copies our message over the commit msg file
+                editor_script = tempfile.mktemp(suffix=".bat", prefix="aicommit_editor_")
+                with open(editor_script, "w", encoding="utf-8") as f:
+                    f.write('@echo off\n')
+                    f.write('copy /Y "' + msg_path + '" "%1" >nul\n')
+                git_editor = 'cmd /c "' + editor_script + '"'
+            else:
+                # Unix: shell script that copies our message
+                editor_script = tempfile.mktemp(suffix=".sh", prefix="aicommit_editor_")
+                with open(editor_script, "w", encoding="utf-8") as f:
+                    f.write('#!/bin/sh\n')
+                    f.write('cp "' + msg_path + '" "$1"\n')
+                st = os.stat(editor_script)
+                os.chmod(editor_script, st.st_mode | stat_mod.S_IEXEC)
+                git_editor = editor_script
+
+            # Create a GIT_SEQUENCE_EDITOR that marks the target commit as 'reword'
+            if platform.system() == "Windows":
+                seq_script = tempfile.mktemp(suffix=".bat", prefix="aicommit_seq_")
+                with open(seq_script, "w", encoding="utf-8") as f:
+                    f.write('@echo off\n')
+                    f.write('powershell -Command "(Get-Content \"%1\") -replace \"^pick (' + short_hash + ')\", \"reword $1\" | Set-Content \"%1\""')
+                git_seq_editor = 'cmd /c "' + seq_script + '"'
+            else:
+                seq_script = tempfile.mktemp(suffix=".sh", prefix="aicommit_seq_")
+                sed_expr = 's/^pick ' + short_hash + '/reword ' + short_hash + '/'
+                with open(seq_script, "w", encoding="utf-8") as f:
+                    f.write('#!/bin/sh\n')
+                    f.write('sed -i \'' + sed_expr + '\' "$1"\n')
+                st = os.stat(seq_script)
+                os.chmod(seq_script, st.st_mode | stat_mod.S_IEXEC)
+                git_seq_editor = seq_script
+
+            env = dict(os.environ)
+            env['GIT_SEQUENCE_EDITOR'] = git_seq_editor
+            env['GIT_EDITOR'] = git_editor
+
+            result = sp.run(
+                ["git", "rebase", "-i", c["hash"] + "^"],
+                capture_output=True, text=True,
+                env=env,
+                creationflags=0x08000000 if platform.system() == "Windows" else 0,
+            )
+
+            if result.returncode == 0:
+                success_count += 1
+                console.print(f"  [green]✓[/green] {short_hash} → {new_msg[:50]}")
+            else:
+                fail_count += 1
+                console.print(f"  [red]✗[/red] {short_hash}: {result.stderr.strip()[:80]}")
+                # Abort the rebase on failure
+                sp.run(["git", "rebase", "--abort"],
+                       capture_output=True, creationflags=0x08000000)
+                break
+        finally:
+            # Cleanup temp files
+            for p in [msg_path]:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+            for p_name in ['editor_script', 'seq_script']:
+                if p_name in dir():
+                    p_val = locals()[p_name]
+                    try:
+                        os.unlink(p_val)
+                    except (OSError, NameError):
+                        pass
+
+    console.print()
+    if success_count:
+        console.print(f"[green]✓ Reworded {success_count} commits successfully.[/green]")
+    if fail_count:
+        console.print(f"[red]✗ {fail_count} commits failed.[/red]")
 
 
 if __name__ == "__main__":

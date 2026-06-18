@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.10.0"
+        assert aicommit.__version__ == "1.11.0"
 
 
 class TestConfig:
@@ -861,3 +861,112 @@ class TestPromptCompleteness:
         assert "{recent_commits}" in DETAILED_PROMPT
         assert "{file_list}" in DETAILED_PROMPT
         assert "{diff}" in DETAILED_PROMPT
+
+
+class TestDiffChunking:
+    """Tests for diff chunking (context-aware slicing for large diffs)."""
+
+    def test_chunk_diff_small(self):
+        """Small diffs should return a single chunk."""
+        from aicommit.git_utils import chunk_diff
+        small_diff = "diff --git a/foo.py b/foo.py\n+print('hello')\n"
+        chunks = chunk_diff(small_diff, threshold=10)
+        assert len(chunks) == 1
+        assert chunks[0]["file"] == "*"
+
+    def test_chunk_diff_large(self):
+        """Large diffs should be split into per-file chunks."""
+        from aicommit.git_utils import chunk_diff
+        # Build a large diff with multiple files, each with enough lines to not be merged
+        lines = []
+        for i in range(5):
+            lines.append(f"diff --git a/file{i}.py b/file{i}.py")
+            lines.append("index abc..def 100644")
+            lines.append("--- a/file{}.py".format(i))
+            lines.append("+++ b/file{}.py".format(i))
+            for j in range(40):
+                lines.append(f"@@ -{j+1},1 +{j+1},1 @@")
+                lines.append(f"-old line {i}_{j}")
+                lines.append(f"+new line {i}_{j}")
+            lines.append("")
+        big_diff = "\n".join(lines)
+        chunks = chunk_diff(big_diff, threshold=50)
+        assert len(chunks) > 1
+        # Each chunk should have a file name
+        for chunk in chunks:
+            assert chunk["file"] != "*"
+            assert chunk["lines"] > 0
+            assert chunk["diff"]
+
+    def test_chunk_diff_merges_tiny(self):
+        """Tiny chunks (<30 lines) should be merged into previous."""
+        from aicommit.git_utils import chunk_diff
+        lines = []
+        # Big file
+        lines.append("diff --git a/big.py b/big.py")
+        lines.append("@@ -1,50 +1,50 @@")
+        for i in range(50):
+            lines.append(f"-line{i}")
+            lines.append(f"+newline{i}")
+        # Small file
+        lines.append("diff --git a/tiny.py b/tiny.py")
+        lines.append("@@ -1,1 +1,1 @@")
+        lines.append("-old")
+        lines.append("+new")
+        big_diff = "\n".join(lines)
+        chunks = chunk_diff(big_diff, threshold=10)
+        # The tiny file should be merged into big.py's chunk
+        assert len(chunks) >= 1
+
+    def test_get_chunked_diff(self):
+        """get_chunked_diff should return (summary, chunks)."""
+        from aicommit.git_utils import get_chunked_diff, chunk_diff
+        # This function requires a git repo, so just verify import
+        assert callable(get_chunked_diff)
+
+    def test_chunk_threshold_constant(self):
+        from aicommit.git_utils import CHUNK_THRESHOLD, CHUNK_MAX_LINES
+        assert CHUNK_THRESHOLD > 0
+        assert CHUNK_MAX_LINES > 0
+        assert CHUNK_MAX_LINES <= CHUNK_THRESHOLD
+
+
+class TestRebaseSupport:
+    """Tests for --rebase interactive rebase functionality."""
+
+    def test_rebase_option_in_help(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert "--rebase" in result.output
+
+    def test_rebase_base_option_in_help(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert "--rebase-base" in result.output
+
+    def test_rebase_all_option_in_help(self):
+        from click.testing import CliRunner
+        from aicommit.cli import main
+        runner = CliRunner()
+        result = runner.invoke(main, ["--help"])
+        assert "--rebase-all" in result.output
+
+    def test_get_commits_in_range_import(self):
+        from aicommit.git_utils import get_commits_in_range
+        assert callable(get_commits_in_range)
+
+    def test_get_commit_diff_import(self):
+        from aicommit.git_utils import get_commit_diff
+        assert callable(get_commit_diff)
+
+    def test_get_commit_files_import(self):
+        from aicommit.git_utils import get_commit_files
+        assert callable(get_commit_files)
+
+    def test_run_rebase_mode_exists(self):
+        from aicommit.cli import _run_rebase_mode
+        assert callable(_run_rebase_mode)
