@@ -402,6 +402,7 @@ pytest
 - 🐛 **Critical fix**: `_run_pr_mode` referenced undefined `language_override` (NameError at runtime)
 - 🐛 **Critical fix**: `_run_squash_mode` referenced undefined `language` variable (NameError at runtime)
 - 🐛 **Critical fix**: `_run_changelog_mode` referenced undefined `language` variable (NameError at runtime)
+- 🔧 **Rebase fix**: Replace Windows batch scripts (`copy /Y`, `.bat`, `cmd /c`) with cross-platform Python wrapper scripts
 - 🐛 Fix `pyproject.toml` URLs pointing to wrong GitHub user (Ghy → Yangge521)
 - 🐛 Fix `README.md` clone URL pointing to wrong GitHub user
 - 🧹 Remove dead code: `reword_commit` function in `git_utils.py` (never called)
@@ -409,7 +410,7 @@ pytest
 - 🧹 Extract `_strip_markdown_fences` and `_validate_response` helpers to eliminate code duplication in `ai.py`
 - 🔧 Fix `_run_rebase_mode` temp file cleanup using unreliable `dir()` check
 - 📝 Fix README changelog ordering (v1.10/v1.11 were after v1.7)
-- ✅ 14 new tests (119 → 133)
+- ✅ 16 new tests (119 → 135)
 
 ### v1.11.0
 

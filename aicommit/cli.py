@@ -1839,89 +1839,124 @@ def _run_rebase_mode(base: str, reword_all: bool, style: str, language_override:
         return
 
     # Apply reworded messages via sequential git rebase
-    # Strategy: use GIT_SEQUENCE_EDITOR + GIT_EDITOR to reword each commit
+    # Strategy: use Python wrapper scripts as GIT_SEQUENCE_EDITOR and GIT_EDITOR
+    # to avoid platform-specific shell escaping issues (Windows copy /Y, batch quoting, etc.)
     console.print(f"[bold]Applying {len(reworded)} reworded messages...[/bold]\n")
 
     import tempfile
     import stat as stat_mod
+    import json
 
     success_count = 0
     fail_count = 0
 
-    # Process in reverse order (oldest commit first) to avoid hash changes affecting later commits
-    for idx, new_msg in reversed(reworded):
-        c = commits[idx]
-        short_hash = c["hash"][:7]
+    # Shared plan file — both wrapper scripts read from it
+    plan_fd, plan_path = tempfile.mkstemp(suffix=".json", prefix="aicommit_plan_", text=True)
+    with os.fdopen(plan_fd, "w", encoding="utf-8") as f:
+        json.dump({"short_hash": "", "msg_path": ""}, f)
 
-        # Write the new message to a temp file
-        msg_fd, msg_path = tempfile.mkstemp(suffix=".txt", prefix="aicommit_reword_", text=True)
-        try:
-            with os.fdopen(msg_fd, "w", encoding="utf-8") as f:
-                f.write(new_msg)
+    def _write_wrapper(name: str, body: list[str]) -> tuple[str, str]:
+        """Write a Python wrapper script and return (invocation_command, script_path)."""
+        path = tempfile.mktemp(suffix=".py", prefix=f"aicommit_{name}_", text=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(body) + "\n")
+        if platform.system() != "Windows":
+            st = os.stat(path)
+            os.chmod(path, st.st_mode | stat_mod.S_IEXEC)
+        python_exe = sys.executable or "python"
+        return python_exe + ' "' + path + '"', path
 
-            # Create a GIT_EDITOR that replaces the message with our file content
-            if platform.system() == "Windows":
-                # Windows: batch script that copies our message over the commit msg file
-                editor_script = tempfile.mktemp(suffix=".bat", prefix="aicommit_editor_")
-                with open(editor_script, "w", encoding="utf-8") as f:
-                    f.write('@echo off\n')
-                    f.write('copy /Y "' + msg_path + '" "%1" >nul\n')
-                git_editor = 'cmd /c "' + editor_script + '"'
-            else:
-                # Unix: shell script that copies our message
-                editor_script = tempfile.mktemp(suffix=".sh", prefix="aicommit_editor_")
-                with open(editor_script, "w", encoding="utf-8") as f:
-                    f.write('#!/bin/sh\n')
-                    f.write('cp "' + msg_path + '" "$1"\n')
-                st = os.stat(editor_script)
-                os.chmod(editor_script, st.st_mode | stat_mod.S_IEXEC)
-                git_editor = editor_script
+    # Sequence editor wrapper: replaces "pick <hash>" with "reword <hash>"
+    seq_wrapper, seq_script_path = _write_wrapper("seq", [
+        '#!/usr/bin/env python3',
+        'import sys, os, json',
+        'plan_path = os.environ.get("AICOMMIT_PLAN", "")',
+        'target = sys.argv[1] if len(sys.argv) > 1 else ""',
+        'if not plan_path or not target: sys.exit(1)',
+        'with open(plan_path, "r", encoding="utf-8") as f: plan = json.load(f)',
+        'short_hash = plan.get("short_hash", "")',
+        'with open(target, "r", encoding="utf-8") as f: lines = f.readlines()',
+        'for i, line in enumerate(lines):',
+        '    if line.startswith("pick " + short_hash):',
+        '        lines[i] = "reword " + line[5:]',
+        '        break',
+        'with open(target, "w", encoding="utf-8") as f: f.writelines(lines)',
+        'sys.exit(0)',
+    ])
 
-            # Create a GIT_SEQUENCE_EDITOR that marks the target commit as 'reword'
-            if platform.system() == "Windows":
-                seq_script = tempfile.mktemp(suffix=".bat", prefix="aicommit_seq_")
-                with open(seq_script, "w", encoding="utf-8") as f:
-                    f.write('@echo off\n')
-                    f.write('powershell -Command "(Get-Content \"%1\") -replace \"^pick (' + short_hash + ')\", \"reword $1\" | Set-Content \"%1\""')
-                git_seq_editor = 'cmd /c "' + seq_script + '"'
-            else:
-                seq_script = tempfile.mktemp(suffix=".sh", prefix="aicommit_seq_")
-                sed_expr = 's/^pick ' + short_hash + '/reword ' + short_hash + '/'
-                with open(seq_script, "w", encoding="utf-8") as f:
-                    f.write('#!/bin/sh\n')
-                    f.write('sed -i \'' + sed_expr + '\' "$1"\n')
-                st = os.stat(seq_script)
-                os.chmod(seq_script, st.st_mode | stat_mod.S_IEXEC)
-                git_seq_editor = seq_script
+    # Commit editor wrapper: replaces the message file content with our message
+    editor_wrapper, editor_script_path = _write_wrapper("editor", [
+        '#!/usr/bin/env python3',
+        'import sys, os, json',
+        'plan_path = os.environ.get("AICOMMIT_PLAN", "")',
+        'target = sys.argv[1] if len(sys.argv) > 1 else ""',
+        'if not plan_path or not target: sys.exit(1)',
+        'with open(plan_path, "r", encoding="utf-8") as f: plan = json.load(f)',
+        'msg_path = plan.get("msg_path", "")',
+        'if msg_path and os.path.exists(msg_path):',
+        '    with open(msg_path, "r", encoding="utf-8") as src:',
+        '        content = src.read()',
+        '    with open(target, "w", encoding="utf-8") as dst:',
+        '        dst.write(content)',
+        'sys.exit(0)',
+    ])
 
-            env = dict(os.environ)
-            env['GIT_SEQUENCE_EDITOR'] = git_seq_editor
-            env['GIT_EDITOR'] = git_editor
+    try:
+        # Process in reverse order (oldest commit first) to avoid hash changes affecting later commits
+        for idx, new_msg in reversed(reworded):
+            c = commits[idx]
+            short_hash = c["hash"][:7]
 
-            result = sp.run(
-                ["git", "rebase", "-i", c["hash"] + "^"],
-                capture_output=True, text=True,
-                env=env,
-                creationflags=0x08000000 if platform.system() == "Windows" else 0,
-            )
+            # Write the new message to a temp file
+            msg_fd, msg_path = tempfile.mkstemp(suffix=".txt", prefix="aicommit_reword_", text=True)
+            try:
+                with os.fdopen(msg_fd, "w", encoding="utf-8") as f:
+                    f.write(new_msg)
 
-            if result.returncode == 0:
-                success_count += 1
-                console.print(f"  [green]✓[/green] {short_hash} → {new_msg[:50]}")
-            else:
-                fail_count += 1
-                console.print(f"  [red]✗[/red] {short_hash}: {result.stderr.strip()[:80]}")
-                # Abort the rebase on failure
-                sp.run(["git", "rebase", "--abort"],
-                       capture_output=True, creationflags=0x08000000)
-                break
-        finally:
-            # Cleanup temp files
-            for p in [msg_path, editor_script, seq_script]:
+                # Update the plan file for this commit
+                with open(plan_path, "w", encoding="utf-8") as f:
+                    json.dump({"short_hash": short_hash, "msg_path": msg_path}, f)
+
+                env = dict(os.environ)
+                env['GIT_SEQUENCE_EDITOR'] = seq_wrapper
+                env['GIT_EDITOR'] = editor_wrapper
+                env['AICOMMIT_PLAN'] = plan_path
+
+                result = sp.run(
+                    ["git", "rebase", "-i", c["hash"] + "^"],
+                    capture_output=True, text=True,
+                    env=env,
+                    creationflags=0x08000000 if platform.system() == "Windows" else 0,
+                )
+
+                if result.returncode == 0:
+                    success_count += 1
+                    console.print(f"  [green]✓[/green] {short_hash} → {new_msg[:50]}")
+                else:
+                    fail_count += 1
+                    console.print(f"  [red]✗[/red] {short_hash}: {result.stderr.strip()[:80]}")
+                    # Abort the rebase on failure
+                    sp.run(["git", "rebase", "--abort"],
+                           capture_output=True, creationflags=0x08000000)
+                    break
+            finally:
                 try:
-                    os.unlink(p)
-                except (OSError, NameError):
+                    os.unlink(msg_path)
+                except OSError:
                     pass
+    finally:
+        # Cleanup plan + wrapper scripts
+        for p in [plan_path, seq_script_path, editor_script_path]:
+            try:
+                os.unlink(p)
+            except (OSError, NameError):
+                pass
+
+    console.print()
+    if success_count:
+        console.print(f"[green]✓ Reworded {success_count} commits successfully.[/green]")
+    if fail_count:
+        console.print(f"[red]✗ {fail_count} commits failed.[/red]")
 
     console.print()
     if success_count:

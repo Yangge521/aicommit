@@ -1085,3 +1085,25 @@ class TestBugFixesV12:
         from aicommit.cli import _run_rebase_mode
         src = inspect.getsource(_run_rebase_mode)
         assert "p_name in dir()" not in src
+
+    def test_rebase_no_batch_scripts(self):
+        """_run_rebase_mode should not create Windows batch scripts."""
+        import inspect
+        from aicommit.cli import _run_rebase_mode
+        src = inspect.getsource(_run_rebase_mode)
+        # Remove comments before checking
+        lines = [l for l in src.split("\n") if not l.strip().startswith("#")]
+        code = "\n".join(lines)
+        assert "copy /Y" not in code
+        assert ".bat" not in code
+        assert "@echo off" not in code
+        assert 'cmd /c' not in code
+
+    def test_rebase_uses_python_wrappers(self):
+        """_run_rebase_mode should use Python wrapper scripts for editors."""
+        import inspect
+        from aicommit.cli import _run_rebase_mode
+        src = inspect.getsource(_run_rebase_mode)
+        assert ".py" in src  # Python wrapper scripts
+        assert "AICOMMIT_PLAN" in src  # Shared plan via env var
+        assert "_write_wrapper" in src  # Helper function
