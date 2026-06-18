@@ -631,39 +631,3 @@ def get_commit_files(commit_hash: str) -> list[str]:
     result = run_git(["show", "--name-only", "--format=", commit_hash])
     return [f for f in result.split("\n") if f.strip()]
 
-
-def reword_commit(commit_hash: str, new_message: str, signoff: bool = False, no_verify: bool = False) -> bool:
-    """Reword a specific commit during an interactive rebase.
-
-    Uses `git rebase --exec` approach with a temporary file.
-    """
-    import tempfile
-
-    # Write the new message to a temp file
-    fd, tmp_path = tempfile.mkstemp(suffix=".txt", prefix="aicommit_reword_", text=True)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(new_message)
-
-        # Use git rebase to reword the specific commit
-        # We use the sequence editor approach
-        seq_script = f"exec git commit --amend -F {tmp_path}"
-        if signoff:
-            seq_script += " --signoff"
-        if no_verify:
-            seq_script += " --no-verify"
-
-        result = subprocess.run(
-            ["git", "rebase", commit_hash + "^", "--exec", seq_script],
-            capture_output=True, text=True,
-            creationflags=0x08000000 if platform.system() == "Windows" else 0,
-        )
-        return result.returncode == 0
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-
-
-import os  # needed by reword_commit

@@ -15,7 +15,6 @@ from rich.table import Table
 from .__init__ import __version__
 from .ai import AIError as AIErr, AIResult, generate_commit_message
 from .config import (
-    CONFIG_FILE,
     TEMPLATE_VARIABLES,
     delete_message_template,
     get_config_value,
@@ -24,7 +23,6 @@ from .config import (
     load_config,
     load_history,
     reset_config,
-    save_config,
     save_history,
     save_message_template,
     set_config_value,
@@ -240,13 +238,13 @@ def main(
         uninstall_hook()
         return
     if generate_pr:
-        _run_pr_mode(pr_base, hint, output_file)
+        _run_pr_mode(pr_base, hint, output_file, language)
         return
     if squash_n:
-        _run_squash_mode(squash_n, style, hint, output_file)
+        _run_squash_mode(squash_n, style, hint, output_file, language)
         return
     if changelog:
-        _run_changelog_mode(version_tag, hint, output_file)
+        _run_changelog_mode(version_tag, hint, output_file, language)
         return
     if review:
         _run_review_mode(severity, hint, output_file)
@@ -626,7 +624,7 @@ def _run_last_mode(style: str, language: str, hint: str, amend: bool, signoff: b
         sys.exit(1)
 
 
-def _run_pr_mode(base_branch: str, hint: str, output_file: str = None):
+def _run_pr_mode(base_branch: str, hint: str, output_file: str = None, language: str = "auto"):
     """Generate a pull request description."""
     if not is_git_repo():
         console.print("[red]✗ Not a git repository.[/red]")
@@ -640,12 +638,12 @@ def _run_pr_mode(base_branch: str, hint: str, output_file: str = None):
             console.print("[red]✗ API key required.[/red]")
             sys.exit(1)
 
-    language = language_override or config["commit"]["language"]
+    lang = language or config["commit"]["language"]
 
     with show_generating() as progress:
         task = progress.add_task("", total=None)
         try:
-            msg = generate_pr_description(base_branch, language, hint)
+            msg = generate_pr_description(base_branch, lang, hint)
         except (GitErr, AIErr) as e:
             progress.remove_task(task)
             console.print(f"[red]✗ {e}[/red]")
@@ -666,7 +664,7 @@ def _run_pr_mode(base_branch: str, hint: str, output_file: str = None):
         _save_to_file(msg, output_file)
 
 
-def _run_squash_mode(num_commits: int, style: str, hint: str, output_file: str = None):
+def _run_squash_mode(num_commits: int, style: str, hint: str, output_file: str = None, language: str = None):
     """Generate a squash commit message."""
     if not is_git_repo():
         console.print("[red]✗ Not a git repository.[/red]")
@@ -674,12 +672,12 @@ def _run_squash_mode(num_commits: int, style: str, hint: str, output_file: str =
 
     config = load_config()
     commit_style = style or config["commit"]["style"]
-    language = language or config["commit"]["language"]
+    lang = language or config["commit"]["language"]
 
     with show_generating() as progress:
         task = progress.add_task("", total=None)
         try:
-            msg = generate_squash_message(num_commits, commit_style, language, hint)
+            msg = generate_squash_message(num_commits, commit_style, lang, hint)
         except (GitErr, AIErr) as e:
             progress.remove_task(task)
             console.print(f"[red]✗ {e}[/red]")
@@ -700,19 +698,19 @@ def _run_squash_mode(num_commits: int, style: str, hint: str, output_file: str =
         _save_to_file(msg, output_file)
 
 
-def _run_changelog_mode(version: str, hint: str, output_file: str = None):
+def _run_changelog_mode(version: str, hint: str, output_file: str = None, language: str = None):
     """Generate a changelog entry."""
     if not is_git_repo():
         console.print("[red]✗ Not a git repository.[/red]")
         sys.exit(1)
 
     config = load_config()
-    language = language or config["commit"]["language"]
+    lang = language or config["commit"]["language"]
 
     with show_generating() as progress:
         task = progress.add_task("", total=None)
         try:
-            msg = generate_changelog(version, language, hint)
+            msg = generate_changelog(version, lang, hint)
         except AIErr as e:
             progress.remove_task(task)
             console.print(f"[red]✗ {e}[/red]")
@@ -1919,18 +1917,11 @@ def _run_rebase_mode(base: str, reword_all: bool, style: str, language_override:
                 break
         finally:
             # Cleanup temp files
-            for p in [msg_path]:
+            for p in [msg_path, editor_script, seq_script]:
                 try:
                     os.unlink(p)
-                except OSError:
+                except (OSError, NameError):
                     pass
-            for p_name in ['editor_script', 'seq_script']:
-                if p_name in dir():
-                    p_val = locals()[p_name]
-                    try:
-                        os.unlink(p_val)
-                    except (OSError, NameError):
-                        pass
 
     console.print()
     if success_count:

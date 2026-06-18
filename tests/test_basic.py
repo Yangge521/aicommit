@@ -8,7 +8,7 @@ from pathlib import Path
 class TestImport:
     def test_version(self):
         import aicommit
-        assert aicommit.__version__ == "1.11.0"
+        assert aicommit.__version__ == "1.12.0"
 
 
 class TestConfig:
@@ -970,3 +970,118 @@ class TestRebaseSupport:
     def test_run_rebase_mode_exists(self):
         from aicommit.cli import _run_rebase_mode
         assert callable(_run_rebase_mode)
+
+
+class TestBugFixesV12:
+    """Tests for bugs fixed in v1.12.0 audit."""
+
+    def test_pr_mode_accepts_language_param(self):
+        """_run_pr_mode should accept a language parameter."""
+        import inspect
+        from aicommit.cli import _run_pr_mode
+        sig = inspect.signature(_run_pr_mode)
+        params = list(sig.parameters.keys())
+        assert "language" in params
+
+    def test_squash_mode_accepts_language_param(self):
+        """_run_squash_mode should accept a language parameter."""
+        import inspect
+        from aicommit.cli import _run_squash_mode
+        sig = inspect.signature(_run_squash_mode)
+        params = list(sig.parameters.keys())
+        assert "language" in params
+
+    def test_changelog_mode_accepts_language_param(self):
+        """_run_changelog_mode should accept a language parameter."""
+        import inspect
+        from aicommit.cli import _run_changelog_mode
+        sig = inspect.signature(_run_changelog_mode)
+        params = list(sig.parameters.keys())
+        assert "language" in params
+
+    def test_pr_mode_no_undefined_language_override(self):
+        """_run_pr_mode should not reference undefined language_override."""
+        import inspect
+        from aicommit.cli import _run_pr_mode
+        src = inspect.getsource(_run_pr_mode)
+        assert "language_override" not in src
+
+    def test_squash_mode_no_undefined_language(self):
+        """_run_squash_mode should not reference undefined 'language' variable."""
+        import inspect
+        from aicommit.cli import _run_squash_mode
+        src = inspect.getsource(_run_squash_mode)
+        # Should use 'lang' or 'language' as a parameter, not bare undefined 'language'
+        assert "language = language or" not in src
+
+    def test_changelog_mode_no_undefined_language(self):
+        """_run_changelog_mode should not reference undefined 'language' variable."""
+        import inspect
+        from aicommit.cli import _run_changelog_mode
+        src = inspect.getsource(_run_changelog_mode)
+        assert "language = language or" not in src
+
+    def test_cli_no_unused_imports(self):
+        """cli.py should not import unused CONFIG_FILE or save_config."""
+        from pathlib import Path
+        cli_path = Path(__file__).parent.parent / "aicommit" / "cli.py"
+        content = cli_path.read_text(encoding="utf-8")
+        # Check that CONFIG_FILE is not in import statement
+        assert "CONFIG_FILE," not in content
+        # save_config should not be imported (it may appear in other contexts)
+        lines = [l for l in content.split("\n") if "save_config" in l and "import" in l]
+        assert len(lines) == 0
+
+    def test_git_utils_no_reword_commit(self):
+        """git_utils.py should not have dead reword_commit function."""
+        from pathlib import Path
+        gu_path = Path(__file__).parent.parent / "aicommit" / "git_utils.py"
+        content = gu_path.read_text(encoding="utf-8")
+        assert "def reword_commit" not in content
+        assert "import os  # needed by reword_commit" not in content
+
+    def test_ai_helpers_exist(self):
+        """ai.py should have _strip_markdown_fences and _validate_response helpers."""
+        from aicommit.ai import _strip_markdown_fences, _validate_response
+        assert callable(_strip_markdown_fences)
+        assert callable(_validate_response)
+
+    def test_strip_markdown_fences(self):
+        """_strip_markdown_fences should remove code block wrapping."""
+        from aicommit.ai import _strip_markdown_fences
+        assert _strip_markdown_fences("```python\nfeat: add login\n```") == "feat: add login"
+        assert _strip_markdown_fences("```\nfix: patch bug\n```") == "fix: patch bug"
+        assert _strip_markdown_fences("feat: no fences") == "feat: no fences"
+
+    def test_pyproject_urls_correct(self):
+        """pyproject.toml should point to Yangge521/aicommit."""
+        from pathlib import Path
+        pp_path = Path(__file__).parent.parent / "pyproject.toml"
+        content = pp_path.read_text(encoding="utf-8")
+        assert "Yangge521/aicommit" in content
+        assert "Ghy/aicommit" not in content
+
+    def test_readme_clone_url_correct(self):
+        """README.md should have correct clone URL."""
+        from pathlib import Path
+        readme_path = Path(__file__).parent.parent / "README.md"
+        content = readme_path.read_text(encoding="utf-8")
+        assert "github.com/Yangge521/aicommit.git" in content
+
+    def test_readme_changelog_order(self):
+        """README.md changelog should have v1.11.0 before v1.7.0."""
+        from pathlib import Path
+        readme_path = Path(__file__).parent.parent / "README.md"
+        content = readme_path.read_text(encoding="utf-8")
+        pos_11 = content.find("### v1.11.0")
+        pos_7 = content.find("### v1.7.0")
+        assert pos_11 > 0
+        assert pos_7 > 0
+        assert pos_11 < pos_7
+
+    def test_rebase_cleanup_no_dir_check(self):
+        """_run_rebase_mode should not use dir() for variable existence check."""
+        import inspect
+        from aicommit.cli import _run_rebase_mode
+        src = inspect.getsource(_run_rebase_mode)
+        assert "p_name in dir()" not in src

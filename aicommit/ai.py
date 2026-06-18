@@ -88,18 +88,7 @@ def generate_commit_message(
         temperature=temp,
     )
 
-    message = result["content"]
-    if not message or not message.strip():
-        raise AIError("AI returned an empty response. Please try again.")
-
-    # Clean up markdown code block wrapping
-    if message.startswith("```"):
-        lines = message.split("\n")
-        if lines[-1].strip() == "```":
-            lines = lines[1:-1]
-        else:
-            lines = lines[1:]
-        message = "\n".join(lines).strip()
+    message = _validate_response(result)
 
     return AIResult(
         message=message,
@@ -204,17 +193,7 @@ def _generate_chunked_message(
     total_time_ms += result["time_ms"]
     model_used = result["model"]
 
-    message = result["content"]
-    if not message or not message.strip():
-        raise AIError("AI returned an empty response. Please try again.")
-
-    if message.startswith("```"):
-        lines = message.split("\n")
-        if lines[-1].strip() == "```":
-            lines = lines[1:-1]
-        else:
-            lines = lines[1:]
-        message = "\n".join(lines).strip()
+    message = _validate_response(result)
 
     return AIResult(
         message=message,
@@ -223,6 +202,26 @@ def _generate_chunked_message(
         tokens_out=total_tokens_out,
         time_ms=total_time_ms,
     )
+
+
+def _strip_markdown_fences(message: str) -> str:
+    """Strip markdown code block wrapping from AI response."""
+    if message.startswith("```"):
+        lines = message.split("\n")
+        if lines[-1].strip() == "```":
+            lines = lines[1:-1]
+        else:
+            lines = lines[1:]
+        message = "\n".join(lines).strip()
+    return message
+
+
+def _validate_response(result: dict) -> str:
+    """Validate AI response and return cleaned message."""
+    message = result["content"]
+    if not message or not message.strip():
+        raise AIError("AI returned an empty response. Please try again.")
+    return _strip_markdown_fences(message)
 
 
 def _generate_simple(
@@ -258,17 +257,7 @@ def _generate_simple(
         temperature=temp,
     )
 
-    message = result["content"]
-    if not message or not message.strip():
-        raise AIError("AI returned an empty response. Please try again.")
-
-    if message.startswith("```"):
-        lines = message.split("\n")
-        if lines[-1].strip() == "```":
-            lines = lines[1:-1]
-        else:
-            lines = lines[1:]
-        message = "\n".join(lines).strip()
+    message = _validate_response(result)
 
     return AIResult(
         message=message,

@@ -389,13 +389,52 @@ aicommit --config
 ## 🧪 Development
 
 ```bash
-git clone https://github.com/Ghy/aicommit.git
+git clone https://github.com/Yangge521/aicommit.git
 cd aicommit
 pip install -e ".[dev]"
 pytest
 ```
 
 ## 📝 Changelog
+
+### v1.12.0
+
+- 🐛 **Critical fix**: `_run_pr_mode` referenced undefined `language_override` (NameError at runtime)
+- 🐛 **Critical fix**: `_run_squash_mode` referenced undefined `language` variable (NameError at runtime)
+- 🐛 **Critical fix**: `_run_changelog_mode` referenced undefined `language` variable (NameError at runtime)
+- 🐛 Fix `pyproject.toml` URLs pointing to wrong GitHub user (Ghy → Yangge521)
+- 🐛 Fix `README.md` clone URL pointing to wrong GitHub user
+- 🧹 Remove dead code: `reword_commit` function in `git_utils.py` (never called)
+- 🧹 Remove unused imports: `CONFIG_FILE`, `save_config` in `cli.py`
+- 🧹 Extract `_strip_markdown_fences` and `_validate_response` helpers to eliminate code duplication in `ai.py`
+- 🔧 Fix `_run_rebase_mode` temp file cleanup using unreliable `dir()` check
+- 📝 Fix README changelog ordering (v1.10/v1.11 were after v1.7)
+- ✅ 14 new tests (119 → 133)
+
+### v1.11.0
+
+- 🧩 **Diff Chunking** — Large diffs (>400 lines) auto-split into per-file chunks; AI generates per-chunk summaries then synthesises a final commit message
+- 🔄 `--rebase` Interactive rebase mode: list commits, pick which to reword, AI generates new messages
+- `--rebase-base BRANCH` Specify base branch/commit for rebase (default: auto-detect from upstream)
+- `--rebase-all` Reword all commits without prompting
+
+### v1.10.0
+
+- 🚀 `--push` Auto-push to remote after committing
+- 🌐 `--language` Override output language at runtime (e.g. `--language zh`)
+- 🎨 `--emoji-pair` Conventional + emoji hybrid mode (e.g. `✨ feat: add feature`)
+- 🐛 Fix `file_list` passed as list instead of string in `--last`, `--retry`, `--hook`, `--choose` modes
+- 🐛 Fix emoji/simple prompts missing `{breaking_hint}` and `{recent_commits}` placeholders
+
+### v1.8.0
+
+- 🔄 `--retry` Regenerate last commit message with better AI prompt
+- 📂 `--group-by dir/type/ext` Split staged changes into grouped commits
+- 🔧 `--install-alias` / `--uninstall-alias` Install/remove git shortcuts (git ci, git review, git squash, git pr, git changelog)
+- 📎 `--body-file FILE` Append body content from file to commit message
+- 🧹 Empty template variable cleanup (removes dangling parens/colons)
+- 👨‍💻 Multi-codepoint emoji support in message template parsing
+- 🐛 Fix `--editor-cmd` with spaces (e.g., `code --wait`)
 
 ### v1.7.0
 
@@ -448,31 +487,6 @@ pytest
 ### v1.0.0
 
 - 🚀 Initial release with DeepSeek API support
-
-### v1.11.0
-
-- 🧩 **Diff Chunking** — Large diffs (>400 lines) auto-split into per-file chunks; AI generates per-chunk summaries then synthesises a final commit message
-- 🔄 `--rebase` Interactive rebase mode: list commits, pick which to reword, AI generates new messages
-- `--rebase-base BRANCH` Specify base branch/commit for rebase (default: auto-detect from upstream)
-- `--rebase-all` Reword all commits without prompting
-
-### v1.10.0
-
-- 🚀 `--push` Auto-push to remote after committing
-- 🌐 `--language` Override output language at runtime (e.g. `--language zh`)
-- 🎨 `--emoji-pair` Conventional + emoji hybrid mode (e.g. `✨ feat: add feature`)
-- 🐛 Fix `file_list` passed as list instead of string in `--last`, `--retry`, `--hook`, `--choose` modes
-- 🐛 Fix emoji/simple prompts missing `{breaking_hint}` and `{recent_commits}` placeholders
-
-### v1.8.0
-
-- 🔄 `--retry` Regenerate last commit message with better AI prompt
-- 📂 `--group-by dir/type/ext` Split staged changes into grouped commits
-- 🔧 `--install-alias` / `--uninstall-alias` Install/remove git shortcuts (git ci, git review, git squash, git pr, git changelog)
-- 📎 `--body-file FILE` Append body content from file to commit message
-- 🧹 Empty template variable cleanup (removes dangling parens/colons)
-- 👨‍💻 Multi-codepoint emoji support in message template parsing
-- 🐛 Fix `--editor-cmd` with spaces (e.g., `code --wait`)
 
 ## 📝 License
 
